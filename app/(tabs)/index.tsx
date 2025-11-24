@@ -65,6 +65,17 @@ export default function HomeScreen() {
         </ThemedText>
       </ThemedView>
       <ThemedView style={styles.stepContainer}>
+        <Link href="/browser">
+          <Link.Trigger>
+            <ThemedText type="subtitle">Open Browser</ThemedText>
+          </Link.Trigger>
+          <Link.Preview />
+        </Link>
+        <ThemedText>
+          Open a simple in-app browser built with WebView. Install the dependency first: <ThemedText type="defaultSemiBold">react-native-webview</ThemedText>.
+        </ThemedText>
+      </ThemedView>
+      <ThemedView style={styles.stepContainer}>
         <ThemedText type="subtitle">Step 3: Get a fresh start</ThemedText>
         <ThemedText>
           {`When you're ready, run `}
