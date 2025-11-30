@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -10,6 +10,8 @@ import {
   View,
   ScrollView,
   Text,
+  Modal,
+  Share,
 } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { Feather } from '@expo/vector-icons';
@@ -19,9 +21,11 @@ import { useThemeColor } from '@/hooks/use-theme-color';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
+import { BottomNav } from '@/components/ui/bottom-nav';
+import { BottomSheetMenu } from '@/components/ui/bottom-sheet-menu';
+import { TabSwitcher } from '@/components/ui/tab-switcher';
 
 export default function BrowserScreen() {
-  const webviewRef = useRef(null as any);
   const HOME = 'https://pyraxis.xo.je';
 
   // Tabs state: each tab keeps its own ref and url/history state
@@ -56,6 +60,26 @@ export default function BrowserScreen() {
       tab.ref.current.loadUrl?.(url);
       tab.ref.current.injectJavaScript?.('window.location = "' + url + '";');
     }
+  }
+
+  function getActiveWebview() {
+    const tab = tabs.find((t) => t.id === activeTabId);
+    return tab?.ref?.current;
+  }
+
+  function goBackActive() {
+    const w = getActiveWebview();
+    w?.goBack();
+  }
+
+  function goForwardActive() {
+    const w = getActiveWebview();
+    w?.goForward();
+  }
+
+  function reloadActive() {
+    const w = getActiveWebview();
+    w?.reload();
   }
 
   function onNavigationStateChange(navState: any) {
@@ -120,25 +144,109 @@ export default function BrowserScreen() {
     setCanGoForward(!!tab.canGoForward);
   }
 
+  // Bottom sheet (overflow menu) state
+  const [sheetVisible, setSheetVisible] = useState(false);
+
+  const [showTabSwitcher, setShowTabSwitcher] = useState(false);
+
+  const [bookmarks, setBookmarks] = useState<string[]>([]);
+  const [history, setHistory] = useState<Array<{ url: string; ts: number }>>([]);
+  const [closedTabs, setClosedTabs] = useState<{ id: string; url: string; title?: string }[]>([]);
+
+  const [historyVisible, setHistoryVisible] = useState(false);
+  const [bookmarksVisible, setBookmarksVisible] = useState(false);
+  const [downloadsVisible, setDownloadsVisible] = useState(false);
+  const [recentVisible, setRecentVisible] = useState(false);
+  const [findVisible, setFindVisible] = useState(false);
+  const [settingsVisible, setSettingsVisible] = useState(false);
+  const [helpVisible, setHelpVisible] = useState(false);
+
+  function addBookmark(url?: string) {
+    const u = url || currentUrl || address;
+    if (!u) return;
+    setBookmarks((prev) => (prev.includes(u) ? prev : [u, ...prev]));
+  }
+
+  function pushHistory(url?: string) {
+    const u = url || currentUrl || address;
+    if (!u) return;
+    setHistory((prev) => [{ url: u, ts: Date.now() }, ...prev]);
+  }
+
+  function handleOverflowAction(action: string, payload?: any) {
+    // Implement the most useful actions
+    switch (action) {
+      case 'new-tab':
+        addTab();
+        break;
+      case 'new-incognito-tab':
+        addTab(HOME);
+        // mark latest tab as incognito
+        setTabs((prev) => prev.map((t, i) => (i === prev.length - 1 ? { ...t, incognito: true, title: 'Incognito' } : t)));
+        break;
+      case 'history':
+        setHistoryVisible(true);
+        break;
+      case 'delete-browsing-data':
+        setHistory([]);
+        setBookmarks([]);
+        Alert.alert('Browsing data deleted');
+        break;
+      case 'downloads':
+        setDownloadsVisible(true);
+        break;
+      case 'bookmarks':
+        setBookmarksVisible(true);
+        break;
+      case 'recent-tabs':
+        setRecentVisible(true);
+        break;
+      case 'share':
+        {
+          const u = currentUrl || address;
+          if (u) Share.share({ message: u, url: u }).catch(() => {});
+        }
+        break;
+      case 'find-in-page':
+        setFindVisible(true);
+        break;
+      case 'translate':
+        Alert.alert('Translate', 'Translate feature not implemented yet');
+        break;
+      case 'add-to-home':
+        Alert.alert('Add to Home', 'Not implemented in this build');
+        break;
+      case 'desktop-site':
+        // payload is boolean
+        setTabs((prev) => prev.map((t) => (t.id === activeTabId ? { ...t, desktop: payload } : t)));
+        break;
+      case 'settings':
+        setSettingsVisible(true);
+        break;
+      case 'help-feedback':
+        setHelpVisible(true);
+        break;
+      default:
+        console.log('Unhandled overflow action', action, payload);
+    }
+  }
+
+  function onNavigationStateChangeWrap(navState: any) {
+    onNavigationStateChange(navState);
+    pushHistory(navState.url);
+  }
+
+  // Small helpers to record closed tabs for "recent tabs"
+  const origCloseTab = closeTab;
+  function closeTabAndRecord(id: string) {
+    const t = tabs.find((x) => x.id === id);
+    if (t) setClosedTabs((prev) => [{ id: t.id, url: t.url, title: t.title }, ...prev]);
+    origCloseTab(id);
+  }
+
   return (
     <ThemedView style={[styles.container, { backgroundColor: webviewBg }] }>
       <View style={[styles.addressBar, { paddingTop: (insets.top || 0) + 8, backgroundColor: webviewBg, zIndex: 10 }] }>
-        <TouchableOpacity
-          onPress={() => canGoBack && webviewRef.current?.goBack()}
-          style={styles.iconButton}
-          accessibilityLabel="Back"
-          disabled={!canGoBack}
-        >
-          <Feather name="arrow-left" size={18} color={canGoBack ? iconColor : '#7f7f7f'} />
-        </TouchableOpacity>
-        <TouchableOpacity
-          onPress={() => canGoForward && webviewRef.current?.goForward()}
-          style={styles.iconButton}
-          accessibilityLabel="Forward"
-          disabled={!canGoForward}
-        >
-          <Feather name="arrow-right" size={18} color={canGoForward ? iconColor : '#7f7f7f'} />
-        </TouchableOpacity>
 
         <TextInput
           value={address}
@@ -152,9 +260,6 @@ export default function BrowserScreen() {
           returnKeyType="go"
         />
 
-        <TouchableOpacity onPress={() => webviewRef.current?.reload()} style={styles.iconButton} accessibilityLabel="Reload">
-          <Feather name="rotate-ccw" size={18} color={iconColor} />
-        </TouchableOpacity>
         <TouchableOpacity onPress={openInExternal} style={styles.iconButton} accessibilityLabel="Open external">
           <Feather name="external-link" size={18} color={iconColor} />
         </TouchableOpacity>
@@ -168,43 +273,144 @@ export default function BrowserScreen() {
           </View>
         )}
         {/* Render one WebView per tab and show only the active one. This preserves history per-tab. */}
-        {tabs.map((t) => (
-          <WebView
-            key={t.id}
-            originWhitelist={["*"]}
-            source={{ uri: t.url }}
-            ref={t.ref}
-            startInLoadingState
-            onLoadStart={() => setLoading(true)}
-            onLoadEnd={() => setLoading(false)}
-            onNavigationStateChange={onNavigationStateChange}
-            style={[styles.webview, t.id === activeTabId ? {} : styles.hiddenWebview]}
-            javaScriptEnabled
-            domStorageEnabled
-          />
-        ))}
+        {tabs.map((t, idx) => {
+          const isActive = t.id === activeTabId;
+          return (
+            <WebView
+              key={t.id}
+              originWhitelist={["*"]}
+              source={{ uri: t.url }}
+              ref={t.ref}
+              startInLoadingState
+              onLoadStart={() => setLoading(true)}
+              onLoadEnd={() => setLoading(false)}
+              onNavigationStateChange={onNavigationStateChangeWrap}
+              style={isActive ? styles.webviewActive : styles.webviewHidden}
+              javaScriptEnabled
+              domStorageEnabled
+            />
+          );
+        })}
       </View>
 
-      {/* Tab bar */}
-      <View style={[styles.tabBar, { paddingBottom: insets.bottom || 8 }]}>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tabList}>
-          {tabs.map((t) => (
-            <View key={t.id} style={styles.tabItemContainer}>
-              <TouchableOpacity onPress={() => switchTab(t.id)} style={[styles.tabItem, t.id === activeTabId ? styles.tabItemActive : undefined]}>
-                <Text numberOfLines={1} style={[styles.tabText, t.id === activeTabId ? styles.tabTextActive : undefined]}>
-                  {t.title || t.url.replace(/^https?:\/\//, '')}
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity onPress={() => closeTab(t.id)} style={styles.tabClose}>
-                <Text style={styles.tabCloseText}>×</Text>
-              </TouchableOpacity>
-            </View>
-          ))}
-          <TouchableOpacity onPress={() => addTab()} style={styles.newTabButton}>
-            <Text style={styles.newTabText}>＋</Text>
-          </TouchableOpacity>
-        </ScrollView>
-      </View>
+      {/* Tab switcher modal */}
+      <TabSwitcher
+        visible={showTabSwitcher}
+        tabs={tabs}
+        activeTabId={activeTabId}
+        onClose={() => setShowTabSwitcher(false)}
+        onSwitch={(id) => switchTab(id)}
+        onCloseTab={(id) => closeTabAndRecord(id)}
+        onAddTab={() => addTab()}
+      />
+
+      {/* Bottom navigation */}
+      <BottomNav
+        canGoBack={canGoBack}
+        canGoForward={canGoForward}
+        onBack={goBackActive}
+        onForward={goForwardActive}
+        onHome={() => navigateTo(HOME)}
+        onTabSwitcher={() => setShowTabSwitcher(true)}
+        onNewTab={() => addTab()}
+        onReload={reloadActive}
+        onOverflow={() => setSheetVisible(true)}
+      />
+
+      <BottomSheetMenu visible={sheetVisible} onClose={() => setSheetVisible(false)} onAction={handleOverflowAction} />
+
+      {/* History modal */}
+      <Modal visible={historyVisible} animationType="slide" transparent onRequestClose={() => setHistoryVisible(false)}>
+        <ThemedView style={{ flex: 1, justifyContent: 'flex-end' }}>
+          <TouchableOpacity style={{ flex: 1 }} onPress={() => setHistoryVisible(false)} />
+          <View style={{ maxHeight: '60%', borderTopLeftRadius: 12, borderTopRightRadius: 12, backgroundColor: webviewBg }}>
+            <ScrollView>
+              {history.map((h, i) => (
+                <TouchableOpacity key={i} onPress={() => { navigateTo(h.url); setHistoryVisible(false); }} style={{ padding: 12, borderBottomWidth: 1, borderBottomColor: '#222' }}>
+                  <Text style={{ color: iconColor }}>{h.url}</Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
+        </ThemedView>
+      </Modal>
+
+      {/* Bookmarks modal */}
+      <Modal visible={bookmarksVisible} animationType="slide" transparent onRequestClose={() => setBookmarksVisible(false)}>
+        <ThemedView style={{ flex: 1, justifyContent: 'flex-end' }}>
+          <TouchableOpacity style={{ flex: 1 }} onPress={() => setBookmarksVisible(false)} />
+          <View style={{ maxHeight: '60%', borderTopLeftRadius: 12, borderTopRightRadius: 12, backgroundColor: webviewBg }}>
+            <ScrollView>
+              {bookmarks.map((b, i) => (
+                <TouchableOpacity key={i} onPress={() => { navigateTo(b); setBookmarksVisible(false); }} style={{ padding: 12, borderBottomWidth: 1, borderBottomColor: '#222' }}>
+                  <Text style={{ color: iconColor }}>{b}</Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
+        </ThemedView>
+      </Modal>
+
+      {/* Downloads modal (placeholder) */}
+      <Modal visible={downloadsVisible} animationType="slide" transparent onRequestClose={() => setDownloadsVisible(false)}>
+        <ThemedView style={{ flex: 1, justifyContent: 'flex-end' }}>
+          <TouchableOpacity style={{ flex: 1 }} onPress={() => setDownloadsVisible(false)} />
+          <View style={{ maxHeight: '40%', borderTopLeftRadius: 12, borderTopRightRadius: 12, backgroundColor: webviewBg, padding: 12 }}>
+            <Text style={{ color: iconColor }}>No downloads yet.</Text>
+          </View>
+        </ThemedView>
+      </Modal>
+
+      {/* Recent tabs modal */}
+      <Modal visible={recentVisible} animationType="slide" transparent onRequestClose={() => setRecentVisible(false)}>
+        <ThemedView style={{ flex: 1, justifyContent: 'flex-end' }}>
+          <TouchableOpacity style={{ flex: 1 }} onPress={() => setRecentVisible(false)} />
+          <View style={{ maxHeight: '60%', borderTopLeftRadius: 12, borderTopRightRadius: 12, backgroundColor: webviewBg }}>
+            <ScrollView>
+              {closedTabs.map((c, i) => (
+                <TouchableOpacity key={i} onPress={() => { addTab(c.url); setRecentVisible(false); }} style={{ padding: 12, borderBottomWidth: 1, borderBottomColor: '#222' }}>
+                  <Text style={{ color: iconColor }}>{c.title || c.url}</Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
+        </ThemedView>
+      </Modal>
+
+      {/* Find in page modal */}
+      <Modal visible={findVisible} animationType="slide" transparent onRequestClose={() => setFindVisible(false)}>
+        <ThemedView style={{ flex: 1, justifyContent: 'flex-end' }}>
+          <TouchableOpacity style={{ flex: 1 }} onPress={() => setFindVisible(false)} />
+          <View style={{ padding: 12, backgroundColor: webviewBg }}>
+            <TextInput placeholder="Find in page" placeholderTextColor={inputBorder} style={[styles.input, { marginBottom: 8 }]} onSubmitEditing={(e) => {
+              const q = e.nativeEvent.text.replace(/'/g, "\\'");
+              const js = `try{window.find('${q}');}catch(e){};true;`;
+              getActiveWebview()?.injectJavaScript?.(js);
+              setFindVisible(false);
+            }} />
+          </View>
+        </ThemedView>
+      </Modal>
+
+      {/* Settings modal (placeholder) */}
+      <Modal visible={settingsVisible} animationType="slide" transparent onRequestClose={() => setSettingsVisible(false)}>
+        <ThemedView style={{ flex: 1, justifyContent: 'flex-end' }}>
+          <TouchableOpacity style={{ flex: 1 }} onPress={() => setSettingsVisible(false)} />
+          <View style={{ maxHeight: '40%', borderTopLeftRadius: 12, borderTopRightRadius: 12, backgroundColor: webviewBg, padding: 12 }}>
+            <Text style={{ color: iconColor }}>Settings placeholder</Text>
+          </View>
+        </ThemedView>
+      </Modal>
+
+      {/* Help modal (placeholder) */}
+      <Modal visible={helpVisible} animationType="slide" transparent onRequestClose={() => setHelpVisible(false)}>
+        <ThemedView style={{ flex: 1, justifyContent: 'flex-end' }}>
+          <TouchableOpacity style={{ flex: 1 }} onPress={() => setHelpVisible(false)} />
+          <View style={{ maxHeight: '40%', borderTopLeftRadius: 12, borderTopRightRadius: 12, backgroundColor: webviewBg, padding: 12 }}>
+            <Text style={{ color: iconColor }}>Help & feedback placeholder</Text>
+          </View>
+        </ThemedView>
+      </Modal>
     </ThemedView>
   );
 }
@@ -228,8 +434,19 @@ const styles = StyleSheet.create({
     minHeight: 36,
   },
   iconButton: { padding: 6 },
+
   webviewContainer: { flex: 1, backgroundColor: '#fff' },
-  webview: { flex: 1 },
+  webviewActive: {
+    flex: 1,
+    width: '100%',
+  },
+  webviewHidden: {
+    height: 0,
+    width: 0,
+    overflow: 'hidden',
+    display: 'none',
+  },
+
   loadingOverlay: {
     position: 'absolute',
     top: 8,
@@ -242,11 +459,7 @@ const styles = StyleSheet.create({
     padding: 6,
     borderRadius: 6,
   },
-  hiddenWebview: {
-    display: 'none',
-    height: 0,
-    width: 0,
-  },
+
   tabBar: {
     borderTopWidth: 1,
     borderTopColor: '#222',
