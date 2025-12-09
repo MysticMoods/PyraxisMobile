@@ -264,12 +264,12 @@ export default function BrowserScreen() {
         );
     }, [bookmarks, persistEnabled]);
 
-    function addBookmark(url?: string) {
+    function addBookmark(url?: string, force: boolean = false) {
         const u = url || currentUrl || address;
         if (!u) return;
         try {
             const host = new URL(u).host;
-            if (blockedDomains.some((d) => host.includes(d))) return;
+            if (!force && blockedDomains.some((d) => host.includes(d))) return;
         } catch {}
         setBookmarks((prev) => (prev.includes(u) ? prev : [u, ...prev]));
     }
@@ -412,7 +412,10 @@ export default function BrowserScreen() {
                 />
                 <TouchableOpacity
                     accessibilityRole="button"
-                    onPress={() => addBookmark()}
+                    onPress={() => {
+                        addBookmark(undefined, true);
+                        Alert.alert("Bookmark added", (currentUrl || address) ?? "");
+                    }}
                     style={styles.iconButton}
                 >
                     <Feather name="star" size={18} color={iconColor} />
@@ -469,6 +472,7 @@ export default function BrowserScreen() {
                 onSwitch={(id) => switchTab(id)}
                 onCloseTab={(id) => closeTabAndRecord(id)}
                 onAddTab={() => addTab()}
+                onAddIncognitoTab={() => addTab(HOME, { incognito: true })}
             />
 
             {/* Bottom navigation */}
