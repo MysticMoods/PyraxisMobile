@@ -1,4 +1,6 @@
-import React, { useState } from "react";
+import { Feather } from "@expo/vector-icons";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import React, { useEffect, useMemo, useState } from "react";
 import {
     ActivityIndicator,
     Alert,
@@ -35,6 +37,7 @@ export default function BrowserScreen() {
             canGoForward: false,
             title: "Home",
             ref: React.createRef<any>(),
+            incognito: false,
         },
     ]);
     const [activeTabId, setActiveTabId] = useState(tabs[0].id);
@@ -122,21 +125,26 @@ export default function BrowserScreen() {
         );
     }
 
-    function addTab(url = HOME) {
+    function addTab(url = HOME, options?: { incognito?: boolean }) {
+        const currentIsIncog = tabs.find((t) => t.id === activeTabId)?.incognito;
+        const isIncog = options?.incognito ?? !!currentIsIncog;
+        const incogUrl = "https://pyraxis.rf.gd/incog.html";
+        const initialUrl = isIncog ? incogUrl : url;
         const id = String(Date.now()) + Math.random().toString(36).slice(2, 7);
         const ref = React.createRef<any>();
         const newTab = {
             id,
-            url,
+            url: initialUrl,
             canGoBack: false,
             canGoForward: false,
-            title: "New",
+            title: isIncog ? "Incognito" : "New",
             ref,
-        };
+            incognito: isIncog,
+        } as any;
         setTabs((prev) => [...prev, newTab]);
         setActiveTabId(id);
-        setAddress(url);
-        setCurrentUrl(url);
+        setAddress(initialUrl);
+        setCurrentUrl(initialUrl);
     }
 
     function closeTab(id: string) {
@@ -163,6 +171,7 @@ export default function BrowserScreen() {
                         canGoForward: false,
                         title: "Home",
                         ref,
+                        incognito: false,
                     };
                     setActiveTabId(freshId);
                     setAddress(HOME);
@@ -205,16 +214,78 @@ export default function BrowserScreen() {
     const [settingsVisible, setSettingsVisible] = useState(false);
     const [helpVisible, setHelpVisible] = useState(false);
 
+    // Blocked domains should not be recorded in history or bookmarks
+    const blockedDomains = useMemo(
+        () => ["pyraxis.rf.gd", "pyraxis.xo.je"],
+        []
+    );
+
+    // Persistence preference: keep history/bookmarks on device
+    const [persistEnabled, setPersistEnabled] = useState<boolean>(false);
+
+    // Load settings and optionally persisted lists
+    useEffect(() => {
+        (async () => {
+            try {
+                const flag = await AsyncStorage.getItem("persistEnabled");
+                const enabled = flag === "true";
+                setPersistEnabled(enabled);
+                if (enabled) {
+                    const [h, b] = await Promise.all([
+                        AsyncStorage.getItem("history"),
+                        AsyncStorage.getItem("bookmarks"),
+                    ]);
+                    if (h) {
+                        try {
+                            const parsed = JSON.parse(h);
+                            if (Array.isArray(parsed)) setHistory(parsed);
+                        } catch {}
+                    }
+                    if (b) {
+                        try {
+                            const parsed = JSON.parse(b);
+                            if (Array.isArray(parsed)) setBookmarks(parsed);
+                        } catch {}
+                    }
+                }
+            } catch {}
+        })();
+    }, []);
+
+    // Persist changes when enabled
+    useEffect(() => {
+        if (!persistEnabled) return;
+        AsyncStorage.setItem("history", JSON.stringify(history)).catch(() => {});
+    }, [history, persistEnabled]);
+    useEffect(() => {
+        if (!persistEnabled) return;
+        AsyncStorage.setItem("bookmarks", JSON.stringify(bookmarks)).catch(
+            () => {}
+        );
+    }, [bookmarks, persistEnabled]);
+
     function addBookmark(url?: string) {
         const u = url || currentUrl || address;
         if (!u) return;
+        try {
+            const host = new URL(u).host;
+            if (blockedDomains.some((d) => host.includes(d))) return;
+        } catch {}
         setBookmarks((prev) => (prev.includes(u) ? prev : [u, ...prev]));
     }
 
     function pushHistory(url?: string) {
         const u = url || currentUrl || address;
         if (!u) return;
-        setHistory((prev) => [{ url: u, ts: Date.now() }, ...prev]);
+        // Do not record history for incognito tabs
+        const activeTab = tabs.find((t) => t.id === activeTabId);
+        if (activeTab?.incognito) return;
+        try {
+            const host = new URL(u).host;
+            if (blockedDomains.some((d) => host.includes(d))) return;
+        } catch {}
+        // Deduplicate history: keep only one entry per URL, most recent first
+        setHistory((prev) => [{ url: u, ts: Date.now() }, ...prev.filter((h) => h.url !== u)]);
     }
 
     function handleOverflowAction(action: string, payload?: any) {
@@ -224,7 +295,8 @@ export default function BrowserScreen() {
                 addTab();
                 break;
             case "new-incognito-tab":
-                addTab(HOME);
+                // Explicitly create an incognito tab
+                addTab(HOME, { incognito: true });
                 // mark latest tab as incognito
                 setTabs((prev) =>
                     prev.map((t, i) =>
@@ -248,6 +320,10 @@ export default function BrowserScreen() {
             case "bookmarks":
                 setBookmarksVisible(true);
                 break;
+            case "add-bookmark":
+                addBookmark();
+                Alert.alert("Bookmark added", (currentUrl || address) ?? "");
+                break;
             case "recent-tabs":
                 setRecentVisible(true);
                 break;
@@ -260,14 +336,13 @@ export default function BrowserScreen() {
             case "find-in-page":
                 setFindVisible(true);
                 break;
-            case "translate":
-                Alert.alert(
-                    "Translate",
-                    "Translate feature not implemented yet"
-                );
-                break;
             case "add-to-home":
-                Alert.alert("Add to Home", "Not implemented in this build");
+                // As an in-app alternative, add to bookmarks and confirm
+                addBookmark();
+                Alert.alert(
+                    "Added to Home",
+                    "Shortcut saved in bookmarks"
+                );
                 break;
             case "desktop-site":
                 // payload is boolean
@@ -278,7 +353,7 @@ export default function BrowserScreen() {
                 );
                 break;
             case "settings":
-                navigateTo("https://pyraxis.rf.gd/settings.html");
+                setSettingsVisible(true);
                 break;
             case "help-feedback":
                 setHelpVisible(true);
@@ -335,6 +410,13 @@ export default function BrowserScreen() {
                     placeholderTextColor={inputBorder}
                     returnKeyType="go"
                 />
+                <TouchableOpacity
+                    accessibilityRole="button"
+                    onPress={() => addBookmark()}
+                    style={styles.iconButton}
+                >
+                    <Feather name="star" size={18} color={iconColor} />
+                </TouchableOpacity>
             </View>
 
             <View
@@ -429,24 +511,32 @@ export default function BrowserScreen() {
                         }}
                     >
                         <ScrollView>
-                            {history.map((h, i) => (
-                                <TouchableOpacity
-                                    key={i}
-                                    onPress={() => {
-                                        navigateTo(h.url);
-                                        setHistoryVisible(false);
-                                    }}
-                                    style={{
-                                        padding: 12,
-                                        borderBottomWidth: 1,
-                                        borderBottomColor: "#222",
-                                    }}
-                                >
+                            {history.length === 0 ? (
+                                <View style={{ padding: 12 }}>
                                     <Text style={{ color: iconColor }}>
-                                        {h.url}
+                                        No history.
                                     </Text>
-                                </TouchableOpacity>
-                            ))}
+                                </View>
+                            ) : (
+                                history.map((h, i) => (
+                                    <TouchableOpacity
+                                        key={i}
+                                        onPress={() => {
+                                            navigateTo(h.url);
+                                            setHistoryVisible(false);
+                                        }}
+                                        style={{
+                                            padding: 12,
+                                            borderBottomWidth: 1,
+                                            borderBottomColor: "#222",
+                                        }}
+                                    >
+                                        <Text style={{ color: iconColor }}>
+                                            {h.url}
+                                        </Text>
+                                    </TouchableOpacity>
+                                ))
+                            )}
                         </ScrollView>
                     </View>
                 </ThemedView>
@@ -473,24 +563,32 @@ export default function BrowserScreen() {
                         }}
                     >
                         <ScrollView>
-                            {bookmarks.map((b, i) => (
-                                <TouchableOpacity
-                                    key={i}
-                                    onPress={() => {
-                                        navigateTo(b);
-                                        setBookmarksVisible(false);
-                                    }}
-                                    style={{
-                                        padding: 12,
-                                        borderBottomWidth: 1,
-                                        borderBottomColor: "#222",
-                                    }}
-                                >
+                            {bookmarks.length === 0 ? (
+                                <View style={{ padding: 12 }}>
                                     <Text style={{ color: iconColor }}>
-                                        {b}
+                                        No bookmarks.
                                     </Text>
-                                </TouchableOpacity>
-                            ))}
+                                </View>
+                            ) : (
+                                bookmarks.map((b, i) => (
+                                    <TouchableOpacity
+                                        key={i}
+                                        onPress={() => {
+                                            navigateTo(b);
+                                            setBookmarksVisible(false);
+                                        }}
+                                        style={{
+                                            padding: 12,
+                                            borderBottomWidth: 1,
+                                            borderBottomColor: "#222",
+                                        }}
+                                    >
+                                        <Text style={{ color: iconColor }}>
+                                            {b}
+                                        </Text>
+                                    </TouchableOpacity>
+                                ))
+                            )}
                         </ScrollView>
                     </View>
                 </ThemedView>
@@ -620,9 +718,54 @@ export default function BrowserScreen() {
                             padding: 12,
                         }}
                     >
-                        <Text style={{ color: iconColor }}>
-                            Settings placeholder
+                        <Text style={{ color: iconColor, marginBottom: 8 }}>
+                            Settings
                         </Text>
+                        <TouchableOpacity
+                            onPress={() =>
+                                Alert.alert(
+                                    "Translate",
+                                    "Translate feature not implemented yet"
+                                )
+                            }
+                            style={{
+                                paddingVertical: 10,
+                                paddingHorizontal: 12,
+                                borderWidth: 1,
+                                borderColor: "#222",
+                                borderRadius: 8,
+                                marginBottom: 12,
+                            }}
+                        >
+                            <Text style={{ color: iconColor }}>
+                                Translate (placeholder)
+                            </Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                            onPress={async () => {
+                                const next = !persistEnabled;
+                                setPersistEnabled(next);
+                                try {
+                                    await AsyncStorage.setItem(
+                                        "persistEnabled",
+                                        next ? "true" : "false"
+                                    );
+                                } catch {}
+                            }}
+                            style={{
+                                paddingVertical: 10,
+                                paddingHorizontal: 12,
+                                borderWidth: 1,
+                                borderColor: "#222",
+                                borderRadius: 8,
+                            }}
+                        >
+                            <Text style={{ color: iconColor }}>
+                                {persistEnabled
+                                    ? "Keep history on device: On"
+                                    : "Keep history on device: Off"}
+                            </Text>
+                        </TouchableOpacity>
                     </View>
                 </ThemedView>
             </Modal>

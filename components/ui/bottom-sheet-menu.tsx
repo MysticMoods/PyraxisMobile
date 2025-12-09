@@ -82,9 +82,6 @@ export function BottomSheetMenu({ visible, onClose, onAction }: Props) {
                         {renderRow("Find in page", "search", () =>
                             handle("find-in-page")
                         )}
-                        {renderRow("Translate", "globe", () =>
-                            handle("translate")
-                        )}
                         {renderRow("Add to Home screen", "home", () =>
                             handle("add-to-home")
                         )}
