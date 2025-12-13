@@ -5,13 +5,12 @@ import {
     Modal,
     NativeScrollEvent,
     NativeSyntheticEvent,
-    Pressable,
     ScrollView,
     StyleSheet,
     Text,
     TouchableOpacity,
     useWindowDimensions,
-    View,
+    View
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { WebView } from "react-native-webview";
@@ -127,8 +126,7 @@ export function TabSwitcher(props: Props) {
                         },
                     ]}
                 >
-                    {/* Tapping empty spaces between cards closes the switcher */}
-                    <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
+                    {/* Removed overlay pressable to allow grid to scroll unobstructed */}
                     <View style={styles.header}>
                         <View style={styles.segmentWrapper}>
                             <TouchableOpacity
@@ -330,8 +328,8 @@ const styles = StyleSheet.create({
         borderRadius: 10,
     },
     countPillText: { color: "#fff", fontSize: 12, fontWeight: "700" },
-    grid: { padding: 12, flexDirection: "row", flexWrap: "wrap", gap: 10 },
-    card: { width: "42%", borderRadius: 10, padding: 8, marginBottom: 12 },
+    grid: { padding: 12, paddingBottom: 40, flexDirection: "row", flexWrap: "wrap", gap: 10 },
+    card: { width: "48%", borderRadius: 10, padding: 8, marginBottom: 12 },
     cardContent: { flex: 1 },
     cardTitle: { fontSize: 14, fontWeight: "600", marginBottom: 6 },
     cardUrl: { fontSize: 12, opacity: 0.8 },

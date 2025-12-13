@@ -38,6 +38,7 @@ export default function BrowserScreen() {
             title: "Home",
             ref: React.createRef<any>(),
             incognito: false,
+            desktop: false,
         },
     ]);
     const [activeTabId, setActiveTabId] = useState(tabs[0].id);
@@ -59,14 +60,31 @@ export default function BrowserScreen() {
         "background"
     );
 
-    function normalizeUrl(input: string) {
+    function isProbablyUrl(t: string) {
+        // Heuristics: has scheme OR looks like domain.tld OR contains a dot with no spaces
+        if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(t)) return true;
+        if (t.includes(" ")) return false;
+        // domain.tld or localhost or ip
+        if (/^([\w-]+\.)+[a-zA-Z]{2,}$/.test(t)) return true;
+        if (/^localhost(?::\d+)?(\/|$)/.test(t)) return true;
+        if (/^\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?(\/|$)/.test(t)) return true;
+        return false;
+    }
+
+    function parseInputToUrl(input: string) {
         const t = input.trim();
-        if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(t)) return t;
-        return "https://" + t;
+        if (!t) return HOME;
+        if (isProbablyUrl(t)) {
+            if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(t)) return t;
+            return "https://" + t;
+        }
+        // Treat as search query
+        const q = encodeURIComponent(t);
+        return `https://www.google.com/search?q=${q}`;
     }
 
     function navigateTo(input: string) {
-        const url = normalizeUrl(input);
+        const url = parseInputToUrl(input);
         setAddress(url);
         setCurrentUrl(url);
         const tab = tabs.find((t) => t.id === activeTabId);
@@ -140,6 +158,7 @@ export default function BrowserScreen() {
             title: isIncog ? "Incognito" : "New",
             ref,
             incognito: isIncog,
+            desktop: false,
         } as any;
         setTabs((prev) => [...prev, newTab]);
         setActiveTabId(id);
@@ -172,6 +191,7 @@ export default function BrowserScreen() {
                         title: "Home",
                         ref,
                         incognito: false,
+                        desktop: false,
                     };
                     setActiveTabId(freshId);
                     setAddress(HOME);
@@ -221,16 +241,16 @@ export default function BrowserScreen() {
     );
 
     // Persistence preference: keep history/bookmarks on device
-    const [persistEnabled, setPersistEnabled] = useState<boolean>(false);
+    const [persistEnabled, setPersistEnabled] = useState<boolean>(true);
 
     // Load settings and optionally persisted lists
     useEffect(() => {
         (async () => {
             try {
                 const flag = await AsyncStorage.getItem("persistEnabled");
-                const enabled = flag === "true";
-                setPersistEnabled(enabled);
-                if (enabled) {
+                const nextEnabled = flag === "true" ? true : flag === "false" ? false : true;
+                setPersistEnabled(nextEnabled);
+                if (nextEnabled) {
                     const [h, b] = await Promise.all([
                         AsyncStorage.getItem("history"),
                         AsyncStorage.getItem("bookmarks"),
@@ -351,6 +371,8 @@ export default function BrowserScreen() {
                         t.id === activeTabId ? { ...t, desktop: payload } : t
                     )
                 );
+                // Force reload to apply new UA
+                setTimeout(() => reloadActive(), 50);
                 break;
             case "settings":
                 setSettingsVisible(true);
@@ -443,6 +465,14 @@ export default function BrowserScreen() {
                 {(() => {
                     const activeTab = tabs.find((t) => t.id === activeTabId);
                     if (!activeTab) return null;
+                    const desktopUA =
+                        Platform.select({
+                            ios: "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+                            android:
+                                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                            default:
+                                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                        }) || undefined;
                     return (
                         <WebView
                             key={activeTab.id}
@@ -458,6 +488,7 @@ export default function BrowserScreen() {
                             style={styles.webviewActive}
                             javaScriptEnabled
                             domStorageEnabled
+                            userAgent={activeTab.desktop ? desktopUA : undefined}
                         />
                     );
                 })()}
@@ -774,7 +805,7 @@ export default function BrowserScreen() {
                 </ThemedView>
             </Modal>
 
-            {/* Help modal (placeholder) */}
+            {/* Help & feedback modal */}
             <Modal
                 visible={helpVisible}
                 animationType="slide"
@@ -792,12 +823,31 @@ export default function BrowserScreen() {
                             borderTopLeftRadius: 12,
                             borderTopRightRadius: 12,
                             backgroundColor: webviewBg,
-                            padding: 12,
+                            padding: 16,
                         }}
                     >
-                        <Text style={{ color: iconColor }}>
-                            Help & feedback placeholder
+                        <Text style={{ color: iconColor, fontWeight: "700", fontSize: 16, marginBottom: 6 }}>
+                            Pyraxis Browser — Help & Feedback
                         </Text>
+                        <Text style={{ color: iconColor, opacity: 0.9, marginBottom: 12 }}>
+                            - Search from the address bar: type a query or URL.
+                            {"\n"}- Use the menu to open new/Incognito tabs, bookmarks, history.
+                            {"\n"}- "Add to Home" saves a shortcut in bookmarks.
+                        </Text>
+                        <View style={{ flexDirection: "row", gap: 12 }}>
+                            <TouchableOpacity
+                                onPress={() => Linking.openURL("mailto:feedback@pyraxis.app?subject=Feedback")}
+                                style={{ borderWidth: 1, borderColor: "#222", borderRadius: 8, paddingHorizontal: 12, paddingVertical: 8 }}
+                            >
+                                <Text style={{ color: iconColor }}>Send feedback</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                                onPress={() => Linking.openURL("https://github.com/MysticMoods/PyraxisMobile/issues")}
+                                style={{ borderWidth: 1, borderColor: "#222", borderRadius: 8, paddingHorizontal: 12, paddingVertical: 8 }}
+                            >
+                                <Text style={{ color: iconColor }}>Report an issue</Text>
+                            </TouchableOpacity>
+                        </View>
                     </View>
                 </ThemedView>
             </Modal>
