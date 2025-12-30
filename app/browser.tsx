@@ -1,10 +1,9 @@
 import { Feather } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import React, { useEffect, useMemo, useState } from "react";
+import { useRouter } from 'expo-router';
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
     ActivityIndicator,
-    Alert,
-    Linking,
     Modal,
     Platform,
     ScrollView,
@@ -17,6 +16,7 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { WebView } from "react-native-webview";
+import OfflinePage from './offline';
 
 import { useThemeColor } from "@/hooks/use-theme-color";
 
@@ -28,6 +28,33 @@ import { TabSwitcher } from "@/components/ui/tab-switcher";
 
 export default function BrowserScreen() {
     const HOME = "https://pyraxis.xo.je";
+
+    const SEARCH_ENGINES = useMemo(
+        () =>
+            [
+                {
+                    id: "google" as const,
+                    label: "Google",
+                    buildUrl: (q: string) =>
+                        `https://www.google.com/search?q=${encodeURIComponent(q)}`,
+                },
+                {
+                    id: "duckduckgo" as const,
+                    label: "DuckDuckGo",
+                    buildUrl: (q: string) =>
+                        `https://duckduckgo.com/?q=${encodeURIComponent(q)}`,
+                },
+                {
+                    id: "bing" as const,
+                    label: "Bing",
+                    buildUrl: (q: string) =>
+                        `https://www.bing.com/search?q=${encodeURIComponent(q)}`,
+                },
+            ] as const,
+        []
+    );
+    type SearchEngineId = (typeof SEARCH_ENGINES)[number]["id"];
+
     // Tabs state: each tab keeps its own ref and url/history state
     const [tabs, setTabs] = useState(() => [
         {
@@ -47,7 +74,50 @@ export default function BrowserScreen() {
     const [canGoBack, setCanGoBack] = useState(false);
     const [canGoForward, setCanGoForward] = useState(false);
     const [loading, setLoading] = useState(false);
+    const loadingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const loadStartedAtRef = useRef<number | null>(null);
     const insets = useSafeAreaInsets();
+    const [bottomNavHeight, setBottomNavHeight] = useState(0);
+    const [addressBarHeight, setAddressBarHeight] = useState(0);
+
+    const [toastMessage, setToastMessage] = useState<string | null>(null);
+    const [toastIcon, setToastIcon] = useState<
+        React.ComponentProps<typeof Feather>["name"]
+    >("bookmark");
+    const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const showToast = (
+        message: string,
+        icon?: React.ComponentProps<typeof Feather>["name"]
+    ) => {
+        if (icon) setToastIcon(icon);
+        setToastMessage(message);
+        if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+        toastTimerRef.current = setTimeout(() => setToastMessage(null), 1800);
+    };
+
+    useEffect(() => {
+        return () => {
+            if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+            if (loadingTimerRef.current) clearTimeout(loadingTimerRef.current);
+        };
+    }, []);
+
+    const clearLoadingTimer = () => {
+        if (loadingTimerRef.current) {
+            clearTimeout(loadingTimerRef.current);
+            loadingTimerRef.current = null;
+        }
+    };
+
+    const startLoadingFailsafe = () => {
+        clearLoadingTimer();
+        loadStartedAtRef.current = Date.now();
+        // Failsafe: some sites can keep WebView callbacks from settling.
+        loadingTimerRef.current = setTimeout(() => {
+            setLoading(false);
+            loadingTimerRef.current = null;
+        }, 12000);
+    };
 
     const iconColor = useThemeColor({ light: "#000", dark: "#fff" }, "text");
     const inputBg = useThemeColor(
@@ -59,6 +129,13 @@ export default function BrowserScreen() {
         { light: "#fff", dark: "#000" },
         "background"
     );
+
+    const toastBg = useThemeColor({ light: "#111", dark: "#111" }, "background");
+    const toastText = useThemeColor({ light: "#fff", dark: "#fff" }, "text");
+
+    const [searchEngine, setSearchEngine] = useState<SearchEngineId>("google");
+
+    const [hydrated, setHydrated] = useState(false);
 
     function isProbablyUrl(t: string) {
         // Heuristics: has scheme OR looks like domain.tld OR contains a dot with no spaces
@@ -79,8 +156,8 @@ export default function BrowserScreen() {
             return "https://" + t;
         }
         // Treat as search query
-        const q = encodeURIComponent(t);
-        return `https://www.google.com/search?q=${q}`;
+        const engine = SEARCH_ENGINES.find((e) => e.id === searchEngine);
+        return (engine ?? SEARCH_ENGINES[0]).buildUrl(t);
     }
 
     function navigateTo(input: string) {
@@ -136,13 +213,6 @@ export default function BrowserScreen() {
         );
     }
 
-    function openInExternal() {
-        const url = currentUrl || address;
-        Linking.openURL(url).catch((e) =>
-            Alert.alert("Open failed", String(e))
-        );
-    }
-
     function addTab(url = HOME, options?: { incognito?: boolean }) {
         const currentIsIncog = tabs.find((t) => t.id === activeTabId)?.incognito;
         const isIncog = options?.incognito ?? !!currentIsIncog;
@@ -166,12 +236,38 @@ export default function BrowserScreen() {
         setCurrentUrl(initialUrl);
     }
 
-    function closeTab(id: string) {
+    function closeTab(id: string, options?: { fromSwitcher?: boolean }) {
         setTabs((prev) => {
             const idx = prev.findIndex((t) => t.id === id);
             if (idx === -1) return prev;
             const next = [...prev.slice(0, idx), ...prev.slice(idx + 1)];
             if (id === activeTabId) {
+                // If the tab switcher is open, don't auto-switch while closing from it.
+                if (options?.fromSwitcher && showTabSwitcher) {
+                    if (next.length === 0) {
+                        // no tabs left: create a fresh one
+                        const freshId = String(Date.now()) + "f";
+                        const ref = React.createRef<any>();
+                        const fresh = {
+                            id: freshId,
+                            url: HOME,
+                            canGoBack: false,
+                            canGoForward: false,
+                            title: "Home",
+                            ref,
+                            incognito: false,
+                            desktop: false,
+                        };
+                        setActiveTabId(freshId);
+                        setAddress(HOME);
+                        setCurrentUrl(HOME);
+                        return [fresh];
+                    }
+                    // Keep activeTabId as-is (may temporarily point to a closed tab)
+                    // until the user selects/creates a tab or closes the switcher.
+                    return next;
+                }
+
                 const newActive = next[idx] ?? next[idx - 1] ?? null;
                 if (newActive) {
                     setActiveTabId(newActive.id);
@@ -219,11 +315,12 @@ export default function BrowserScreen() {
     const [showTabSwitcher, setShowTabSwitcher] = useState(false);
 
     const [bookmarks, setBookmarks] = useState<string[]>([]);
-    const [history, setHistory] = useState<Array<{ url: string; ts: number }>>(
-        []
-    );
+    const [history, setHistory] = useState<{ url: string; ts: number }[]>([]);
     const [closedTabs, setClosedTabs] = useState<
         { id: string; url: string; title?: string }[]
+    >([]);
+    const [downloads, setDownloads] = useState<
+        { url: string; ts: number; filename?: string }[]
     >([]);
 
     const [historyVisible, setHistoryVisible] = useState(false);
@@ -232,7 +329,22 @@ export default function BrowserScreen() {
     const [recentVisible, setRecentVisible] = useState(false);
     const [findVisible, setFindVisible] = useState(false);
     const [settingsVisible, setSettingsVisible] = useState(false);
-    const [helpVisible, setHelpVisible] = useState(false);
+    const [offlineVisible, setOfflineVisible] = useState(false);
+    const router = useRouter();
+
+    // For web: use navigator.onLine to show offline UI reliably when network is disconnected
+    useEffect(() => {
+        if (Platform.OS === 'web' && typeof window !== 'undefined' && 'navigator' in window) {
+            const update = () => setOfflineVisible(!navigator.onLine);
+            update();
+            window.addEventListener('online', update);
+            window.addEventListener('offline', update);
+            return () => {
+                window.removeEventListener('online', update);
+                window.removeEventListener('offline', update);
+            };
+        }
+    }, []);
 
     // Blocked domains should not be recorded in history or bookmarks
     const blockedDomains = useMemo(
@@ -240,49 +352,172 @@ export default function BrowserScreen() {
         []
     );
 
-    // Persistence preference: keep history/bookmarks on device
+    // Persistence preference (legacy UI switch). Data persistence is always enabled.
     const [persistEnabled, setPersistEnabled] = useState<boolean>(true);
 
-    // Load settings and optionally persisted lists
+    // Load settings and persisted lists
     useEffect(() => {
         (async () => {
             try {
-                const flag = await AsyncStorage.getItem("persistEnabled");
+                const [flag, engineRaw] = await Promise.all([
+                    AsyncStorage.getItem("persistEnabled"),
+                    AsyncStorage.getItem("searchEngine"),
+                ]);
                 const nextEnabled = flag === "true" ? true : flag === "false" ? false : true;
                 setPersistEnabled(nextEnabled);
-                if (nextEnabled) {
-                    const [h, b] = await Promise.all([
-                        AsyncStorage.getItem("history"),
-                        AsyncStorage.getItem("bookmarks"),
-                    ]);
-                    if (h) {
-                        try {
-                            const parsed = JSON.parse(h);
-                            if (Array.isArray(parsed)) setHistory(parsed);
-                        } catch {}
-                    }
-                    if (b) {
-                        try {
-                            const parsed = JSON.parse(b);
-                            if (Array.isArray(parsed)) setBookmarks(parsed);
-                        } catch {}
-                    }
+
+                const engine =
+                    engineRaw === "google" || engineRaw === "duckduckgo" || engineRaw === "bing"
+                        ? (engineRaw as SearchEngineId)
+                        : "google";
+                setSearchEngine(engine);
+
+                const [h, b, t, ct, dl] = await Promise.all([
+                    AsyncStorage.getItem("history"),
+                    AsyncStorage.getItem("bookmarks"),
+                    AsyncStorage.getItem("tabsStateV1"),
+                    AsyncStorage.getItem("closedTabs"),
+                    AsyncStorage.getItem("downloads"),
+                ]);
+                if (h) {
+                    try {
+                        const parsed = JSON.parse(h);
+                        if (Array.isArray(parsed)) setHistory(parsed);
+                    } catch {}
+                }
+                if (b) {
+                    try {
+                        const parsed = JSON.parse(b);
+                        if (Array.isArray(parsed)) setBookmarks(parsed);
+                    } catch {}
+                }
+
+                if (t) {
+                    try {
+                        const parsed = JSON.parse(t);
+                        type PersistedTab = {
+                            id: string;
+                            url: string;
+                            title?: string;
+                            desktop?: boolean;
+                        };
+                        const savedTabs: PersistedTab[] | null = Array.isArray(parsed?.tabs)
+                            ? (parsed.tabs as PersistedTab[])
+                            : null;
+                        const savedActiveTabId =
+                            typeof parsed?.activeTabId === "string" ? parsed.activeTabId : null;
+                        if (savedTabs && savedTabs.length) {
+                            const restoredTabs: {
+                                id: string;
+                                url: string;
+                                canGoBack: boolean;
+                                canGoForward: boolean;
+                                title: string;
+                                ref: React.RefObject<any>;
+                                incognito: boolean;
+                                desktop: boolean;
+                            }[] = savedTabs
+                                .filter(
+                                    (x: PersistedTab) =>
+                                        typeof x.id === "string" && typeof x.url === "string"
+                                )
+                                .map((x: PersistedTab) => ({
+                                    id: x.id,
+                                    url: x.url,
+                                    canGoBack: false,
+                                    canGoForward: false,
+                                    title: typeof x.title === "string" ? x.title : "",
+                                    ref: React.createRef<any>(),
+                                    incognito: false,
+                                    desktop: !!x.desktop,
+                                }));
+
+                            if (restoredTabs.length) {
+                                setTabs(restoredTabs);
+                                const nextActive =
+                                    (savedActiveTabId &&
+                                    restoredTabs.some(
+                                        (x: { id: string }) => x.id === savedActiveTabId
+                                    )
+                                        ? savedActiveTabId
+                                        : restoredTabs[0].id) || restoredTabs[0].id;
+                                setActiveTabId(nextActive);
+                                const activeUrl = restoredTabs.find(
+                                    (x: { id: string; url: string }) => x.id === nextActive
+                                )?.url;
+                                if (activeUrl) {
+                                    setAddress(activeUrl);
+                                    setCurrentUrl(activeUrl);
+                                }
+                            }
+                        }
+                    } catch {}
+                }
+
+                if (ct) {
+                    try {
+                        const parsed = JSON.parse(ct);
+                        if (Array.isArray(parsed)) setClosedTabs(parsed);
+                    } catch {}
+                }
+
+                if (dl) {
+                    try {
+                        const parsed = JSON.parse(dl);
+                        if (Array.isArray(parsed)) setDownloads(parsed);
+                    } catch {}
                 }
             } catch {}
+            setHydrated(true);
         })();
     }, []);
 
     // Persist changes when enabled
     useEffect(() => {
-        if (!persistEnabled) return;
+        if (!hydrated) return;
         AsyncStorage.setItem("history", JSON.stringify(history)).catch(() => {});
-    }, [history, persistEnabled]);
+    }, [history, hydrated]);
     useEffect(() => {
-        if (!persistEnabled) return;
+        if (!hydrated) return;
         AsyncStorage.setItem("bookmarks", JSON.stringify(bookmarks)).catch(
             () => {}
         );
-    }, [bookmarks, persistEnabled]);
+    }, [bookmarks, hydrated]);
+
+    useEffect(() => {
+        if (!hydrated) return;
+        AsyncStorage.setItem("closedTabs", JSON.stringify(closedTabs)).catch(
+            () => {}
+        );
+    }, [closedTabs, hydrated]);
+
+    useEffect(() => {
+        if (!hydrated) return;
+        AsyncStorage.setItem("downloads", JSON.stringify(downloads)).catch(
+            () => {}
+        );
+    }, [downloads, hydrated]);
+
+    useEffect(() => {
+        if (!hydrated) return;
+        AsyncStorage.setItem("searchEngine", searchEngine).catch(() => {});
+    }, [searchEngine, hydrated]);
+
+    useEffect(() => {
+        if (!hydrated) return;
+        const persistedTabs = tabs
+            .filter((t) => !t.incognito)
+            .map((t) => ({
+                id: t.id,
+                url: t.url,
+                title: t.title,
+                desktop: !!t.desktop,
+            }));
+        AsyncStorage.setItem(
+            "tabsStateV1",
+            JSON.stringify({ tabs: persistedTabs, activeTabId })
+        ).catch(() => {});
+    }, [tabs, activeTabId, hydrated]);
 
     function addBookmark(url?: string, force: boolean = false) {
         const u = url || currentUrl || address;
@@ -332,7 +567,7 @@ export default function BrowserScreen() {
             case "delete-browsing-data":
                 setHistory([]);
                 setBookmarks([]);
-                Alert.alert("Browsing data deleted");
+                showToast("Browsing data deleted", "trash-2");
                 break;
             case "downloads":
                 setDownloadsVisible(true);
@@ -342,7 +577,7 @@ export default function BrowserScreen() {
                 break;
             case "add-bookmark":
                 addBookmark();
-                Alert.alert("Bookmark added", (currentUrl || address) ?? "");
+                showToast("Bookmark added", "bookmark");
                 break;
             case "recent-tabs":
                 setRecentVisible(true);
@@ -359,10 +594,7 @@ export default function BrowserScreen() {
             case "add-to-home":
                 // As an in-app alternative, add to bookmarks and confirm
                 addBookmark();
-                Alert.alert(
-                    "Added to Home",
-                    "Shortcut saved in bookmarks"
-                );
+                showToast("Saved to bookmarks", "bookmark");
                 break;
             case "desktop-site":
                 // payload is boolean
@@ -378,7 +610,12 @@ export default function BrowserScreen() {
                 setSettingsVisible(true);
                 break;
             case "help-feedback":
-                setHelpVisible(true);
+                // Navigate to a dedicated Help page
+                try {
+                    router.push("/help");
+                } catch {
+                    showToast("Could not open help page", "alert-circle");
+                }
                 break;
             default:
                 console.log("Unhandled overflow action", action, payload);
@@ -388,61 +625,78 @@ export default function BrowserScreen() {
     function onNavigationStateChangeWrap(navState: any) {
         onNavigationStateChange(navState);
         pushHistory(navState.url);
+        if (typeof navState?.loading === "boolean") {
+            setLoading(navState.loading);
+            if (!navState.loading) clearLoadingTimer();
+        }
     }
 
     // Small helpers to record closed tabs for "recent tabs"
     const origCloseTab = closeTab;
-    function closeTabAndRecord(id: string) {
+    function closeTabAndRecord(id: string, options?: { fromSwitcher?: boolean }) {
         const t = tabs.find((x) => x.id === id);
         if (t)
             setClosedTabs((prev) => [
                 { id: t.id, url: t.url, title: t.title },
                 ...prev,
             ]);
-        origCloseTab(id);
+        origCloseTab(id, options);
+    }
+
+    function closeTabSwitcher() {
+        setShowTabSwitcher(false);
+        // If the active tab was closed while the switcher was open, select a remaining tab.
+        if (!tabs.some((t) => t.id === activeTabId)) {
+            const fallback = tabs[0];
+            if (fallback) switchTab(fallback.id);
+            else addTab();
+        }
     }
 
     return (
         <ThemedView style={[styles.container, { backgroundColor: webviewBg }]}>
-            <View
-                style={[
-                    styles.addressBar,
-                    {
-                        paddingTop: (insets.top || 0) + 8,
-                        backgroundColor: webviewBg,
-                        zIndex: 10,
-                    },
-                ]}
-            >
-                <TextInput
-                    value={address}
-                    onChangeText={setAddress}
-                    onSubmitEditing={(e) => navigateTo(e.nativeEvent.text)}
-                    placeholder="Enter URL or search"
-                    keyboardType="url"
-                    autoCapitalize="none"
+            {!showTabSwitcher && (
+                <View
                     style={[
-                        styles.input,
+                        styles.addressBar,
                         {
-                            backgroundColor: inputBg,
-                            borderColor: inputBorder,
-                            color: iconColor,
+                            paddingTop: (insets.top || 0) + 8,
+                            backgroundColor: webviewBg,
+                            zIndex: 10,
                         },
                     ]}
-                    placeholderTextColor={inputBorder}
-                    returnKeyType="go"
-                />
-                <TouchableOpacity
-                    accessibilityRole="button"
-                    onPress={() => {
-                        addBookmark(undefined, true);
-                        Alert.alert("Bookmark added", (currentUrl || address) ?? "");
-                    }}
-                    style={styles.iconButton}
+                    onLayout={(e) => setAddressBarHeight(e.nativeEvent.layout.height)}
                 >
-                    <Feather name="star" size={18} color={iconColor} />
-                </TouchableOpacity>
-            </View>
+                    <TextInput
+                        value={address}
+                        onChangeText={setAddress}
+                        onSubmitEditing={(e) => navigateTo(e.nativeEvent.text)}
+                        placeholder="Enter URL or search"
+                        keyboardType="url"
+                        autoCapitalize="none"
+                        style={[
+                            styles.input,
+                            {
+                                backgroundColor: inputBg,
+                                borderColor: inputBorder,
+                                color: iconColor,
+                            },
+                        ]}
+                        placeholderTextColor={inputBorder}
+                        returnKeyType="go"
+                    />
+                    <TouchableOpacity
+                        accessibilityRole="button"
+                        onPress={() => {
+                            addBookmark(undefined, true);
+                            showToast("Bookmark added", "bookmark");
+                        }}
+                        style={styles.iconButton}
+                    >
+                        <Feather name="star" size={18} color={iconColor} />
+                    </TouchableOpacity>
+                </View>
+            )}
 
             <View
                 style={[
@@ -450,7 +704,7 @@ export default function BrowserScreen() {
                     { backgroundColor: webviewBg },
                 ]}
             >
-                {loading && (
+                {loading && !showTabSwitcher && (
                     <View
                         style={[
                             styles.loadingOverlay,
@@ -473,6 +727,23 @@ export default function BrowserScreen() {
                             default:
                                 "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                         }) || undefined;
+                    if (offlineVisible) {
+                        return (
+                            <View style={styles.webviewActive}>
+                                <OfflinePage
+                                    onRetry={() => {
+                                        setOfflineVisible(false);
+                                        reloadActive();
+                                    }}
+                                    onGoHome={() => {
+                                        setOfflineVisible(false);
+                                        navigateTo(HOME);
+                                    }}
+                                />
+                            </View>
+                        );
+                    }
+
                     return (
                         <WebView
                             key={activeTab.id}
@@ -480,15 +751,42 @@ export default function BrowserScreen() {
                             source={{ uri: activeTab.url }}
                             ref={activeTab.ref}
                             startInLoadingState
-                            onLoadStart={() => setLoading(true)}
-                            onLoadEnd={() => setLoading(false)}
-                            onNavigationStateChange={
-                                onNavigationStateChangeWrap
-                            }
+                            onLoadStart={() => {
+                                setLoading(true);
+                                startLoadingFailsafe();
+                            }}
+                            onLoadProgress={(e) => {
+                                const p = e?.nativeEvent?.progress;
+                                // If we're basically done, ensure the overlay disappears.
+                                if (typeof p === "number") {
+                                    if (p >= 0.9) {
+                                        const startedAt = loadStartedAtRef.current;
+                                        // Avoid hiding immediately on very fast navigations.
+                                        if (!startedAt || Date.now() - startedAt > 400) {
+                                            setLoading(false);
+                                            clearLoadingTimer();
+                                        }
+                                    }
+                                }
+                            }}
+                            onLoadEnd={() => {
+                                setLoading(false);
+                                clearLoadingTimer();
+                            }}
+                            onError={() => {
+                                setLoading(false);
+                                clearLoadingTimer();
+                                setOfflineVisible(true);
+                            }}
+                            onNavigationStateChange={onNavigationStateChangeWrap}
                             style={styles.webviewActive}
                             javaScriptEnabled
                             domStorageEnabled
                             userAgent={activeTab.desktop ? desktopUA : undefined}
+                            incognito={!!activeTab.incognito}
+                            sharedCookiesEnabled={!activeTab.incognito}
+                            thirdPartyCookiesEnabled={!activeTab.incognito}
+                            cacheEnabled={!activeTab.incognito}
                         />
                     );
                 })()}
@@ -499,31 +797,75 @@ export default function BrowserScreen() {
                 visible={showTabSwitcher}
                 tabs={tabs}
                 activeTabId={activeTabId}
-                onClose={() => setShowTabSwitcher(false)}
+                onClose={closeTabSwitcher}
                 onSwitch={(id) => switchTab(id)}
-                onCloseTab={(id) => closeTabAndRecord(id)}
+                onCloseTab={(id, options) => closeTabAndRecord(id, options)}
                 onAddTab={() => addTab()}
                 onAddIncognitoTab={() => addTab(HOME, { incognito: true })}
+                availableHeight={Math.max(0, (typeof window !== 'undefined' ? window.innerHeight : 0) - bottomNavHeight) || undefined}
+                bottomNavHeight={bottomNavHeight}
             />
 
             {/* Bottom navigation */}
-            <BottomNav
+            <View onLayout={(e) => setBottomNavHeight(e.nativeEvent.layout.height)}>
+                <BottomNav
                 canGoBack={canGoBack}
                 canGoForward={canGoForward}
                 onBack={goBackActive}
                 onForward={goForwardActive}
                 onHome={() => navigateTo(HOME)}
-                onTabSwitcher={() => setShowTabSwitcher(true)}
+                onTabSwitcher={() => setShowTabSwitcher((v) => !v)}
                 onNewTab={() => addTab()}
                 onReload={reloadActive}
                 onOverflow={() => setSheetVisible(true)}
-            />
+                />
+            </View>
 
             <BottomSheetMenu
                 visible={sheetVisible}
                 onClose={() => setSheetVisible(false)}
                 onAction={handleOverflowAction}
             />
+
+            {!!toastMessage && (
+                <View
+                    pointerEvents="none"
+                    style={{
+                        position: "absolute",
+                        left: 12,
+                        right: 12,
+                        top: showTabSwitcher
+                            ? (insets.top || 0) + 12
+                            : Math.max((insets.top || 0) + 12, addressBarHeight + 6),
+                        alignItems: "center",
+                        zIndex: 9999,
+                    }}
+                >
+                    <View
+                        style={{
+                            backgroundColor: toastBg,
+                            borderRadius: 10,
+                            paddingVertical: 10,
+                            paddingHorizontal: 12,
+                            maxWidth: "100%",
+                            opacity: 0.94,
+                            flexDirection: "row",
+                            alignItems: "center",
+                            gap: 8,
+                            shadowColor: "#000",
+                            shadowOpacity: 0.25,
+                            shadowRadius: 10,
+                            shadowOffset: { width: 0, height: 4 },
+                            elevation: 6,
+                        }}
+                    >
+                        <Feather name={toastIcon} size={16} color={toastText} />
+                        <Text style={{ color: toastText, fontWeight: "600" }}>
+                            {toastMessage}
+                        </Text>
+                    </View>
+                </View>
+            )}
 
             {/* History modal */}
             <Modal
@@ -756,11 +1098,51 @@ export default function BrowserScreen() {
                         <Text style={{ color: iconColor, marginBottom: 8 }}>
                             Settings
                         </Text>
+
+                        <View
+                            style={{
+                                borderWidth: 1,
+                                borderColor: "#222",
+                                borderRadius: 8,
+                                marginBottom: 12,
+                                overflow: "hidden",
+                            }}
+                        >
+                            <View style={{ paddingVertical: 10, paddingHorizontal: 12 }}>
+                                <Text style={{ color: iconColor, fontWeight: "600" }}>
+                                    Search engine
+                                </Text>
+                            </View>
+                            {SEARCH_ENGINES.map((e) => {
+                                const selected = e.id === searchEngine;
+                                return (
+                                    <TouchableOpacity
+                                        key={e.id}
+                                        onPress={() => setSearchEngine(e.id)}
+                                        style={{
+                                            paddingVertical: 10,
+                                            paddingHorizontal: 12,
+                                            borderTopWidth: 1,
+                                            borderTopColor: "#222",
+                                            flexDirection: "row",
+                                            alignItems: "center",
+                                            justifyContent: "space-between",
+                                        }}
+                                    >
+                                        <Text style={{ color: iconColor }}>{e.label}</Text>
+                                        {selected && (
+                                            <Feather name="check" size={18} color={iconColor} />
+                                        )}
+                                    </TouchableOpacity>
+                                );
+                            })}
+                        </View>
+
                         <TouchableOpacity
                             onPress={() =>
-                                Alert.alert(
-                                    "Translate",
-                                    "Translate feature not implemented yet"
+                                showToast(
+                                    "Translate feature not implemented yet",
+                                    "info"
                                 )
                             }
                             style={{
@@ -805,52 +1187,7 @@ export default function BrowserScreen() {
                 </ThemedView>
             </Modal>
 
-            {/* Help & feedback modal */}
-            <Modal
-                visible={helpVisible}
-                animationType="slide"
-                transparent
-                onRequestClose={() => setHelpVisible(false)}
-            >
-                <ThemedView style={{ flex: 1, justifyContent: "flex-end" }}>
-                    <TouchableOpacity
-                        style={{ flex: 1 }}
-                        onPress={() => setHelpVisible(false)}
-                    />
-                    <View
-                        style={{
-                            maxHeight: "40%",
-                            borderTopLeftRadius: 12,
-                            borderTopRightRadius: 12,
-                            backgroundColor: webviewBg,
-                            padding: 16,
-                        }}
-                    >
-                        <Text style={{ color: iconColor, fontWeight: "700", fontSize: 16, marginBottom: 6 }}>
-                            Pyraxis Browser — Help & Feedback
-                        </Text>
-                        <Text style={{ color: iconColor, opacity: 0.9, marginBottom: 12 }}>
-                            - Search from the address bar: type a query or URL.
-                            {"\n"}- Use the menu to open new/Incognito tabs, bookmarks, history.
-                            {"\n"}- "Add to Home" saves a shortcut in bookmarks.
-                        </Text>
-                        <View style={{ flexDirection: "row", gap: 12 }}>
-                            <TouchableOpacity
-                                onPress={() => Linking.openURL("mailto:feedback@pyraxis.app?subject=Feedback")}
-                                style={{ borderWidth: 1, borderColor: "#222", borderRadius: 8, paddingHorizontal: 12, paddingVertical: 8 }}
-                            >
-                                <Text style={{ color: iconColor }}>Send feedback</Text>
-                            </TouchableOpacity>
-                            <TouchableOpacity
-                                onPress={() => Linking.openURL("https://github.com/MysticMoods/PyraxisMobile/issues")}
-                                style={{ borderWidth: 1, borderColor: "#222", borderRadius: 8, paddingHorizontal: 12, paddingVertical: 8 }}
-                            >
-                                <Text style={{ color: iconColor }}>Report an issue</Text>
-                            </TouchableOpacity>
-                        </View>
-                    </View>
-                </ThemedView>
-            </Modal>
+            {/* Help & feedback handled via dedicated /help page */}
         </ThemedView>
     );
 }

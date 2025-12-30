@@ -2,13 +2,12 @@ import { Feather } from "@expo/vector-icons";
 import { BlurView } from "expo-blur";
 import React, { useState } from "react";
 import {
-    Modal,
-    ScrollView,
+    Modal, Platform, ScrollView,
     StyleSheet,
     Switch,
     TouchableOpacity,
-    View,
-} from "react-native";
+    View
+} from 'react-native';
 
 import { ThemedText } from "@/components/themed-text";
 import { ThemedView } from "@/components/themed-view";
@@ -36,6 +35,8 @@ export function BottomSheetMenu({ visible, onClose, onAction }: Props) {
         onClose();
     }
 
+    const isDark = bg === '#000' || bg === 'black';
+
     return (
         <Modal
             visible={visible}
@@ -49,10 +50,13 @@ export function BottomSheetMenu({ visible, onClose, onAction }: Props) {
                 darkColor="transparent"
             >
                 <BlurView
-                    intensity={25}
-                    tint="default"
+                    intensity={Platform.OS === 'ios' ? 90 : 35}
+                    tint={isDark ? 'dark' : 'light'}
                     style={StyleSheet.absoluteFill}
                 />
+                {Platform.OS !== 'ios' && (
+                    <View style={[StyleSheet.absoluteFill, { backgroundColor: isDark ? 'rgba(0,0,0,0.22)' : 'rgba(255,255,255,0.22)' }]} pointerEvents="none" />
+                )}
                 <TouchableOpacity
                     style={styles.backdropTouchable}
                     onPress={onClose}
