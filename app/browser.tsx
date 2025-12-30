@@ -4,6 +4,8 @@ import { useRouter } from 'expo-router';
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
     ActivityIndicator,
+    Image,
+    Linking,
     Modal,
     Platform,
     ScrollView,
@@ -80,15 +82,17 @@ export default function BrowserScreen() {
     const [bottomNavHeight, setBottomNavHeight] = useState(0);
     const [addressBarHeight, setAddressBarHeight] = useState(0);
 
+    const APP_LOGO = useMemo(
+        () => require("../assets/images/app-icon-72.png"),
+        []
+    );
+
+    type ToastIcon = React.ComponentProps<typeof Feather>["name"] | "logo";
+
     const [toastMessage, setToastMessage] = useState<string | null>(null);
-    const [toastIcon, setToastIcon] = useState<
-        React.ComponentProps<typeof Feather>["name"]
-    >("bookmark");
+    const [toastIcon, setToastIcon] = useState<ToastIcon>("bookmark");
     const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const showToast = (
-        message: string,
-        icon?: React.ComponentProps<typeof Feather>["name"]
-    ) => {
+    const showToast = (message: string, icon?: ToastIcon) => {
         if (icon) setToastIcon(icon);
         setToastMessage(message);
         if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
@@ -636,11 +640,34 @@ export default function BrowserScreen() {
     function closeTabAndRecord(id: string, options?: { fromSwitcher?: boolean }) {
         const t = tabs.find((x) => x.id === id);
         if (t)
-            setClosedTabs((prev) => [
-                { id: t.id, url: t.url, title: t.title },
-                ...prev,
-            ]);
+            setClosedTabs((prev) => {
+                const next = [{ id: t.id, url: t.url, title: t.title }, ...prev];
+                return next.slice(0, 50);
+            });
         origCloseTab(id, options);
+    }
+
+    function recordDownload(downloadUrl: string) {
+        if (!downloadUrl) return;
+        try {
+            const u = new URL(downloadUrl);
+            const rawName = u.pathname.split("/").pop() || u.pathname || downloadUrl;
+            const filename = decodeURIComponent(rawName);
+            setDownloads((prev) => {
+                const next = [{ url: downloadUrl, ts: Date.now(), filename }, ...prev.filter((d) => d.url !== downloadUrl)];
+                return next.slice(0, 50);
+            });
+            // Open downloads so the user can see the new entry immediately
+            setDownloadsVisible(true);
+            console.log("Recorded download:", downloadUrl);
+        } catch {
+            setDownloads((prev) => {
+                const next = [{ url: downloadUrl, ts: Date.now(), filename: downloadUrl }, ...prev.filter((d) => d.url !== downloadUrl)];
+                return next.slice(0, 50);
+            });
+            setDownloadsVisible(true);
+            console.log("Recorded download (fallback):", downloadUrl);
+        }
     }
 
     function closeTabSwitcher() {
@@ -694,6 +721,51 @@ export default function BrowserScreen() {
                         style={styles.iconButton}
                     >
                         <Feather name="star" size={18} color={iconColor} />
+                    </TouchableOpacity>
+                </View>
+            )}
+
+            {/* Inline find bar (below URL bar) */}
+            {!showTabSwitcher && findVisible && (
+                <View
+                    style={{
+                        paddingHorizontal: 8,
+                        paddingBottom: 8,
+                        backgroundColor: webviewBg,
+                        borderBottomWidth: StyleSheet.hairlineWidth,
+                        borderBottomColor: "#222",
+                        flexDirection: "row",
+                        alignItems: "center",
+                        gap: 8,
+                        zIndex: 9,
+                    }}
+                >
+                    <Feather name="search" size={16} color={iconColor} />
+                    <TextInput
+                        placeholder="Find in page"
+                        placeholderTextColor={inputBorder}
+                        style={[
+                            styles.input,
+                            {
+                                backgroundColor: inputBg,
+                                borderColor: inputBorder,
+                                color: iconColor,
+                            },
+                        ]}
+                        autoCapitalize="none"
+                        returnKeyType="search"
+                        onSubmitEditing={(e) => {
+                            const q = e.nativeEvent.text.replace(/'/g, "\\'");
+                            const js = `try{window.find('${q}');}catch(e){};true;`;
+                            getActiveWebview()?.injectJavaScript?.(js);
+                        }}
+                    />
+                    <TouchableOpacity
+                        onPress={() => setFindVisible(false)}
+                        style={styles.iconButton}
+                        accessibilityLabel="Close find"
+                    >
+                        <Feather name="x" size={18} color={iconColor} />
                     </TouchableOpacity>
                 </View>
             )}
@@ -779,6 +851,14 @@ export default function BrowserScreen() {
                                 setOfflineVisible(true);
                             }}
                             onNavigationStateChange={onNavigationStateChangeWrap}
+                            onFileDownload={({ nativeEvent }) => {
+                                const downloadUrl = (nativeEvent as any)?.downloadUrl;
+                                if (typeof downloadUrl === "string" && downloadUrl) {
+                                    recordDownload(downloadUrl);
+                                    showToast("Downloading…", "logo");
+                                    Linking.openURL(downloadUrl).catch(() => {});
+                                }
+                            }}
                             style={styles.webviewActive}
                             javaScriptEnabled
                             domStorageEnabled
@@ -859,7 +939,15 @@ export default function BrowserScreen() {
                             elevation: 6,
                         }}
                     >
-                        <Feather name={toastIcon} size={16} color={toastText} />
+                        {toastIcon === "logo" ? (
+                            <Image
+                                source={APP_LOGO}
+                                style={{ width: 16, height: 16, borderRadius: 3 }}
+                                resizeMode="contain"
+                            />
+                        ) : (
+                            <Feather name={toastIcon} size={16} color={toastText} />
+                        )}
                         <Text style={{ color: toastText, fontWeight: "600" }}>
                             {toastMessage}
                         </Text>
@@ -971,7 +1059,7 @@ export default function BrowserScreen() {
                 </ThemedView>
             </Modal>
 
-            {/* Downloads modal (placeholder) */}
+            {/* Downloads modal */}
             <Modal
                 visible={downloadsVisible}
                 animationType="slide"
@@ -985,16 +1073,45 @@ export default function BrowserScreen() {
                     />
                     <View
                         style={{
-                            maxHeight: "40%",
+                            maxHeight: "60%",
                             borderTopLeftRadius: 12,
                             borderTopRightRadius: 12,
                             backgroundColor: webviewBg,
                             padding: 12,
                         }}
                     >
-                        <Text style={{ color: iconColor }}>
-                            No downloads yet.
+                        <Text style={{ color: iconColor, fontWeight: "600", marginBottom: 8 }}>
+                            Downloads
                         </Text>
+                        <ScrollView>
+                            {downloads.length === 0 ? (
+                                <View style={{ paddingVertical: 12 }}>
+                                    <Text style={{ color: iconColor }}>
+                                        No downloads yet.
+                                    </Text>
+                                </View>
+                            ) : (
+                                downloads.map((d, i) => (
+                                    <TouchableOpacity
+                                        key={i}
+                                        onPress={() => {
+                                            Linking.openURL(d.url).catch(() =>
+                                                showToast("Could not open download", "alert-circle")
+                                            );
+                                        }}
+                                        style={{
+                                            paddingVertical: 12,
+                                            borderBottomWidth: 1,
+                                            borderBottomColor: "#222",
+                                        }}
+                                    >
+                                        <Text style={{ color: iconColor }} numberOfLines={2}>
+                                            {d.filename || d.url}
+                                        </Text>
+                                    </TouchableOpacity>
+                                ))
+                            )}
+                        </ScrollView>
                     </View>
                 </ThemedView>
             </Modal>
@@ -1020,56 +1137,33 @@ export default function BrowserScreen() {
                         }}
                     >
                         <ScrollView>
-                            {closedTabs.map((c, i) => (
-                                <TouchableOpacity
-                                    key={i}
-                                    onPress={() => {
-                                        addTab(c.url);
-                                        setRecentVisible(false);
-                                    }}
-                                    style={{
-                                        padding: 12,
-                                        borderBottomWidth: 1,
-                                        borderBottomColor: "#222",
-                                    }}
-                                >
+                            {closedTabs.length === 0 ? (
+                                <View style={{ padding: 12 }}>
                                     <Text style={{ color: iconColor }}>
-                                        {c.title || c.url}
+                                        No recent tabs.
                                     </Text>
-                                </TouchableOpacity>
-                            ))}
+                                </View>
+                            ) : (
+                                closedTabs.map((c, i) => (
+                                    <TouchableOpacity
+                                        key={i}
+                                        onPress={() => {
+                                            addTab(c.url);
+                                            setRecentVisible(false);
+                                        }}
+                                        style={{
+                                            padding: 12,
+                                            borderBottomWidth: 1,
+                                            borderBottomColor: "#222",
+                                        }}
+                                    >
+                                        <Text style={{ color: iconColor }}>
+                                            {c.title || c.url}
+                                        </Text>
+                                    </TouchableOpacity>
+                                ))
+                            )}
                         </ScrollView>
-                    </View>
-                </ThemedView>
-            </Modal>
-
-            {/* Find in page modal */}
-            <Modal
-                visible={findVisible}
-                animationType="slide"
-                transparent
-                onRequestClose={() => setFindVisible(false)}
-            >
-                <ThemedView style={{ flex: 1, justifyContent: "flex-end" }}>
-                    <TouchableOpacity
-                        style={{ flex: 1 }}
-                        onPress={() => setFindVisible(false)}
-                    />
-                    <View style={{ padding: 12, backgroundColor: webviewBg }}>
-                        <TextInput
-                            placeholder="Find in page"
-                            placeholderTextColor={inputBorder}
-                            style={[styles.input, { marginBottom: 8 }]}
-                            onSubmitEditing={(e) => {
-                                const q = e.nativeEvent.text.replace(
-                                    /'/g,
-                                    "\\'"
-                                );
-                                const js = `try{window.find('${q}');}catch(e){};true;`;
-                                getActiveWebview()?.injectJavaScript?.(js);
-                                setFindVisible(false);
-                            }}
-                        />
                     </View>
                 </ThemedView>
             </Modal>

@@ -13,7 +13,7 @@
 <!-- ## 11. Local Storage History. and bookmarks. so taht it isnt lost when the page is restarted.  -->
 <!-- ## 12. Make a custom error page - 404 Page Not Found -->
 <!-- ## 13. Custom no interrrrnet page - because teh offline page we already have is hosted. which yk, no internet. so yeah -->
-## 14. auto url search id google by defualt, change to current engine
+<!-- ## 14. auto url search id google by defualt, change to current engine  - use with current search engine after making a new home page. -->
 ## 15. settings page doesnt exist
 ## 16. the desktop mode doesnt work
 ## 17. download not shown once downloaded
@@ -21,7 +21,7 @@
 <!-- ## 19. search engine list not scrollable whne the gui opens. it scrolls the bg. -->
 <!-- ## 20. the search bar is kinda small - ez fix, just increase the font-size -->
 <!-- ## 21. the popup notifications seems old - for that i think we might have to make custom ones.  -->
-## 22. stripe payments and support us  - 
+## 22. stripe payments and support us.
 ## 23. E-Commerce Site to sell the 'PYKEY'
 <!-- ## 24. YT Shorts loading thing just stays there. - baically, the loading.. text at top never goes away.  -->
 ## 25. AUTO_UPDATES             ---------- PC
