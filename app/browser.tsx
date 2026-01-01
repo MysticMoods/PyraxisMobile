@@ -1,67 +1,68 @@
 import { Feather } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { useRouter } from 'expo-router';
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useFocusEffect } from "@react-navigation/native";
+import { LinearGradient } from "expo-linear-gradient";
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-    ActivityIndicator,
+    Animated,
     Image,
     Linking,
-    Modal,
     Platform,
-    ScrollView,
+    Pressable,
     Share,
     StyleSheet,
     Text,
     TextInput,
     TouchableOpacity,
-    View,
+    useWindowDimensions,
+    View
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { WebView } from "react-native-webview";
 import OfflinePage from './offline';
 
+import { StartPage } from "@/components/start-page";
+
+import { haptics } from "@/hooks/use-haptics";
 import { useThemeColor } from "@/hooks/use-theme-color";
 
-import { ThemedText } from "@/components/themed-text";
 import { ThemedView } from "@/components/themed-view";
 import { BottomNav } from "@/components/ui/bottom-nav";
 import { BottomSheetMenu } from "@/components/ui/bottom-sheet-menu";
+import { ModalListItem, ModalSheet } from "@/components/ui/modal-sheet";
 import { TabSwitcher } from "@/components/ui/tab-switcher";
 
-export default function BrowserScreen() {
-    const HOME = "https://pyraxis.xo.je";
+import {
+    isSearchEngineId,
+    SEARCH_ENGINES,
+    type SearchEngineId,
+} from "@/constants/search-engines";
 
-    const SEARCH_ENGINES = useMemo(
-        () =>
-            [
-                {
-                    id: "google" as const,
-                    label: "Google",
-                    buildUrl: (q: string) =>
-                        `https://www.google.com/search?q=${encodeURIComponent(q)}`,
-                },
-                {
-                    id: "duckduckgo" as const,
-                    label: "DuckDuckGo",
-                    buildUrl: (q: string) =>
-                        `https://duckduckgo.com/?q=${encodeURIComponent(q)}`,
-                },
-                {
-                    id: "bing" as const,
-                    label: "Bing",
-                    buildUrl: (q: string) =>
-                        `https://www.bing.com/search?q=${encodeURIComponent(q)}`,
-                },
-            ] as const,
-        []
-    );
-    type SearchEngineId = (typeof SEARCH_ENGINES)[number]["id"];
+export default function BrowserScreen() {
+    const HOME_INTERNAL = "pyraxis://home";
+    const INCOGNITO_INTERNAL = "pyraxis://incognito";
+
+    const params = useLocalSearchParams<{
+        input?: string;
+        url?: string;
+        engine?: string;
+    }>();
+
+    const initialInputParam =
+        typeof params?.input === "string" && params.input.trim()
+            ? params.input
+            : undefined;
+    const initialUrlParam =
+        typeof params?.url === "string" && params.url.trim() ? params.url : undefined;
+    const initialEngineParam =
+        isSearchEngineId(params?.engine) ? (params.engine as SearchEngineId) : undefined;
 
     // Tabs state: each tab keeps its own ref and url/history state
     const [tabs, setTabs] = useState(() => [
         {
             id: String(Date.now()),
-            url: HOME,
+            url: HOME_INTERNAL,
             canGoBack: false,
             canGoForward: false,
             title: "Home",
@@ -71,16 +72,19 @@ export default function BrowserScreen() {
         },
     ]);
     const [activeTabId, setActiveTabId] = useState(tabs[0].id);
-    const [address, setAddress] = useState(HOME);
-    const [currentUrl, setCurrentUrl] = useState(HOME);
+    const [address, setAddress] = useState(HOME_INTERNAL);
+    const [currentUrl, setCurrentUrl] = useState(HOME_INTERNAL);
     const [canGoBack, setCanGoBack] = useState(false);
     const [canGoForward, setCanGoForward] = useState(false);
     const [loading, setLoading] = useState(false);
     const loadingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const loadStartedAtRef = useRef<number | null>(null);
     const insets = useSafeAreaInsets();
+    const { width: windowWidth, height: windowHeight } = useWindowDimensions();
     const [bottomNavHeight, setBottomNavHeight] = useState(0);
     const [addressBarHeight, setAddressBarHeight] = useState(0);
+
+    const addressInputRef = useRef<TextInput>(null);
 
     const APP_LOGO = useMemo(
         () => require("../assets/images/app-icon-72.png"),
@@ -88,15 +92,41 @@ export default function BrowserScreen() {
     );
 
     type ToastIcon = React.ComponentProps<typeof Feather>["name"] | "logo";
+    type ToastType = "success" | "error" | "info" | "warning";
 
     const [toastMessage, setToastMessage] = useState<string | null>(null);
     const [toastIcon, setToastIcon] = useState<ToastIcon>("bookmark");
+    const [toastType, setToastType] = useState<ToastType>("info");
+    const toastAnimRef = useRef(new Animated.Value(0)).current;
     const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const showToast = (message: string, icon?: ToastIcon) => {
+    
+    const showToast = (message: string, icon?: ToastIcon, type: ToastType = "info") => {
         if (icon) setToastIcon(icon);
+        setToastType(type);
         setToastMessage(message);
+        
+        // Trigger haptic based on type
+        if (type === "success") haptics.success();
+        else if (type === "error") haptics.error();
+        else if (type === "warning") haptics.warning();
+        else haptics.light();
+        
+        // Animate in
+        Animated.spring(toastAnimRef, {
+            toValue: 1,
+            friction: 8,
+            tension: 100,
+            useNativeDriver: true,
+        }).start();
+        
         if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-        toastTimerRef.current = setTimeout(() => setToastMessage(null), 1800);
+        toastTimerRef.current = setTimeout(() => {
+            Animated.timing(toastAnimRef, {
+                toValue: 0,
+                duration: 200,
+                useNativeDriver: true,
+            }).start(() => setToastMessage(null));
+        }, 2200);
     };
 
     useEffect(() => {
@@ -123,6 +153,36 @@ export default function BrowserScreen() {
         }, 12000);
     };
 
+    // Loading progress animation
+    const loadingProgressAnim = useRef(new Animated.Value(0)).current;
+    const loadingOpacityAnim = useRef(new Animated.Value(0)).current;
+    
+    useEffect(() => {
+        if (loading) {
+            loadingProgressAnim.setValue(0);
+            Animated.parallel([
+                Animated.timing(loadingOpacityAnim, {
+                    toValue: 1,
+                    duration: 150,
+                    useNativeDriver: true,
+                }),
+                Animated.loop(
+                    Animated.timing(loadingProgressAnim, {
+                        toValue: 1,
+                        duration: 1500,
+                        useNativeDriver: false,
+                    })
+                ),
+            ]).start();
+        } else {
+            Animated.timing(loadingOpacityAnim, {
+                toValue: 0,
+                duration: 200,
+                useNativeDriver: true,
+            }).start();
+        }
+    }, [loading, loadingOpacityAnim, loadingProgressAnim]);
+
     const iconColor = useThemeColor({ light: "#000", dark: "#fff" }, "text");
     const inputBg = useThemeColor(
         { light: "#fff", dark: "#1e1e1e" },
@@ -134,14 +194,11 @@ export default function BrowserScreen() {
         "background"
     );
 
-    const toastBg = useThemeColor({ light: "#111", dark: "#111" }, "background");
-    const toastText = useThemeColor({ light: "#fff", dark: "#fff" }, "text");
-
     const [searchEngine, setSearchEngine] = useState<SearchEngineId>("google");
 
     const [hydrated, setHydrated] = useState(false);
 
-    function isProbablyUrl(t: string) {
+    const isProbablyUrl = useCallback((t: string) => {
         // Heuristics: has scheme OR looks like domain.tld OR contains a dot with no spaces
         if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(t)) return true;
         if (t.includes(" ")) return false;
@@ -150,11 +207,12 @@ export default function BrowserScreen() {
         if (/^localhost(?::\d+)?(\/|$)/.test(t)) return true;
         if (/^\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?(\/|$)/.test(t)) return true;
         return false;
-    }
+    }, []);
 
-    function parseInputToUrl(input: string) {
+    const parseInputToUrl = useCallback(
+        (input: string) => {
         const t = input.trim();
-        if (!t) return HOME;
+        if (!t) return HOME_INTERNAL;
         if (isProbablyUrl(t)) {
             if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(t)) return t;
             return "https://" + t;
@@ -162,12 +220,56 @@ export default function BrowserScreen() {
         // Treat as search query
         const engine = SEARCH_ENGINES.find((e) => e.id === searchEngine);
         return (engine ?? SEARCH_ENGINES[0]).buildUrl(t);
-    }
+        },
+        [HOME_INTERNAL, isProbablyUrl, searchEngine]
+    );
 
-    function navigateTo(input: string) {
+    const navigateTo = useCallback((input: string) => {
         const url = parseInputToUrl(input);
         setAddress(url);
         setCurrentUrl(url);
+
+        const isInternal = url.toLowerCase().startsWith("pyraxis://");
+        if (isInternal) {
+            setCanGoBack(false);
+            setCanGoForward(false);
+            setLoading(false);
+            clearLoadingTimer();
+            setTabs((prev) =>
+                prev.map((t) =>
+                    t.id === activeTabId
+                        ? {
+                              ...t,
+                              url,
+                              canGoBack: false,
+                              canGoForward: false,
+                              title:
+                                  url === HOME_INTERNAL
+                                      ? "Home"
+                                      : url === INCOGNITO_INTERNAL
+                                        ? "Incognito"
+                                        : (t.title || "Home"),
+                          }
+                        : t
+                )
+            );
+            return;
+        }
+
+        // Update the active tab URL so the UI swaps from internal StartPage to WebView.
+        setTabs((prev) =>
+            prev.map((t) =>
+                t.id === activeTabId
+                    ? {
+                          ...t,
+                          url,
+                          canGoBack: false,
+                          canGoForward: false,
+                      }
+                    : t
+            )
+        );
+
         const tab = tabs.find((t) => t.id === activeTabId);
         if (tab?.ref?.current) {
             tab.ref.current.loadUrl?.(url);
@@ -175,7 +277,7 @@ export default function BrowserScreen() {
                 'window.location = "' + url + '";'
             );
         }
-    }
+    }, [activeTabId, parseInputToUrl, tabs]);
 
     function getActiveWebview() {
         const tab = tabs.find((t) => t.id === activeTabId);
@@ -217,11 +319,10 @@ export default function BrowserScreen() {
         );
     }
 
-    function addTab(url = HOME, options?: { incognito?: boolean }) {
+    function addTab(url = HOME_INTERNAL, options?: { incognito?: boolean }) {
         const currentIsIncog = tabs.find((t) => t.id === activeTabId)?.incognito;
         const isIncog = options?.incognito ?? !!currentIsIncog;
-        const incogUrl = "https://pyraxis.rf.gd/incog.html";
-        const initialUrl = isIncog ? incogUrl : url;
+        const initialUrl = isIncog && url === HOME_INTERNAL ? INCOGNITO_INTERNAL : url;
         const id = String(Date.now()) + Math.random().toString(36).slice(2, 7);
         const ref = React.createRef<any>();
         const newTab = {
@@ -232,7 +333,7 @@ export default function BrowserScreen() {
             title: isIncog ? "Incognito" : "New",
             ref,
             incognito: isIncog,
-            desktop: false,
+            desktop: isIncog ? false : !!settings.desktopSiteDefault,
         } as any;
         setTabs((prev) => [...prev, newTab]);
         setActiveTabId(id);
@@ -254,7 +355,7 @@ export default function BrowserScreen() {
                         const ref = React.createRef<any>();
                         const fresh = {
                             id: freshId,
-                            url: HOME,
+                            url: HOME_INTERNAL,
                             canGoBack: false,
                             canGoForward: false,
                             title: "Home",
@@ -263,12 +364,20 @@ export default function BrowserScreen() {
                             desktop: false,
                         };
                         setActiveTabId(freshId);
-                        setAddress(HOME);
-                        setCurrentUrl(HOME);
+                        setAddress(HOME_INTERNAL);
+                        setCurrentUrl(HOME_INTERNAL);
                         return [fresh];
                     }
-                    // Keep activeTabId as-is (may temporarily point to a closed tab)
-                    // until the user selects/creates a tab or closes the switcher.
+
+                    // Still ensure the active tab points to a real tab to avoid a blank WebView.
+                    const newActive = next[idx] ?? next[idx - 1] ?? next[0] ?? null;
+                    if (newActive) {
+                        setActiveTabId(newActive.id);
+                        setAddress(newActive.url);
+                        setCurrentUrl(newActive.url);
+                        setCanGoBack(!!newActive.canGoBack);
+                        setCanGoForward(!!newActive.canGoForward);
+                    }
                     return next;
                 }
 
@@ -285,7 +394,7 @@ export default function BrowserScreen() {
                     const ref = React.createRef<any>();
                     const fresh = {
                         id: freshId,
-                        url: HOME,
+                        url: HOME_INTERNAL,
                         canGoBack: false,
                         canGoForward: false,
                         title: "Home",
@@ -294,8 +403,8 @@ export default function BrowserScreen() {
                         desktop: false,
                     };
                     setActiveTabId(freshId);
-                    setAddress(HOME);
-                    setCurrentUrl(HOME);
+                    setAddress(HOME_INTERNAL);
+                    setCurrentUrl(HOME_INTERNAL);
                     return [fresh];
                 }
             }
@@ -332,9 +441,10 @@ export default function BrowserScreen() {
     const [downloadsVisible, setDownloadsVisible] = useState(false);
     const [recentVisible, setRecentVisible] = useState(false);
     const [findVisible, setFindVisible] = useState(false);
-    const [settingsVisible, setSettingsVisible] = useState(false);
     const [offlineVisible, setOfflineVisible] = useState(false);
     const router = useRouter();
+
+    const appliedInitialNavRef = useRef(false);
 
     // For web: use navigator.onLine to show offline UI reliably when network is disconnected
     useEffect(() => {
@@ -351,30 +461,67 @@ export default function BrowserScreen() {
     }, []);
 
     // Blocked domains should not be recorded in history or bookmarks
-    const blockedDomains = useMemo(
-        () => ["pyraxis.rf.gd", "pyraxis.xo.je"],
-        []
-    );
+    const blockedDomains = useMemo(() => ["pyraxis.xo.je"], []);
 
-    // Persistence preference (legacy UI switch). Data persistence is always enabled.
-    const [persistEnabled, setPersistEnabled] = useState<boolean>(true);
+    const [settings, setSettings] = useState(() => ({
+        desktopSiteDefault: false,
+        javaScriptEnabled: true,
+        thirdPartyCookiesEnabled: true,
+        adBlockEnabled: true,
+    }));
+
+    const applySettingsRaw = useCallback((settingsRaw: string | null) => {
+        if (!settingsRaw) return;
+        try {
+            const parsed = JSON.parse(settingsRaw);
+            if (parsed && typeof parsed === "object") {
+                setSettings((prev) => ({
+                    ...prev,
+                    desktopSiteDefault: !!(parsed as any).desktopSiteDefault,
+                    javaScriptEnabled:
+                        typeof (parsed as any).javaScriptEnabled === "boolean"
+                            ? (parsed as any).javaScriptEnabled
+                            : prev.javaScriptEnabled,
+                    thirdPartyCookiesEnabled:
+                        typeof (parsed as any).thirdPartyCookiesEnabled === "boolean"
+                            ? (parsed as any).thirdPartyCookiesEnabled
+                            : prev.thirdPartyCookiesEnabled,
+                    adBlockEnabled:
+                        typeof (parsed as any).adBlockEnabled === "boolean"
+                            ? (parsed as any).adBlockEnabled
+                            : prev.adBlockEnabled,
+                }));
+            }
+        } catch {}
+    }, []);
+
+    const persistSettingsPatch = useCallback(async (patch: Record<string, any>) => {
+        try {
+            const raw = await AsyncStorage.getItem("settingsV1");
+            let base: any = {};
+            try {
+                const parsed = raw ? JSON.parse(raw) : null;
+                if (parsed && typeof parsed === "object") base = parsed;
+            } catch {}
+            const next = { ...base, ...patch };
+            await AsyncStorage.setItem("settingsV1", JSON.stringify(next));
+        } catch {}
+    }, []);
 
     // Load settings and persisted lists
     useEffect(() => {
         (async () => {
             try {
-                const [flag, engineRaw] = await Promise.all([
-                    AsyncStorage.getItem("persistEnabled"),
+                const [engineRaw, settingsRaw] = await Promise.all([
                     AsyncStorage.getItem("searchEngine"),
+                    AsyncStorage.getItem("settingsV1"),
                 ]);
-                const nextEnabled = flag === "true" ? true : flag === "false" ? false : true;
-                setPersistEnabled(nextEnabled);
+                const engineFromStorage: SearchEngineId = isSearchEngineId(engineRaw)
+                    ? engineRaw
+                    : "google";
+                setSearchEngine(engineFromStorage);
 
-                const engine =
-                    engineRaw === "google" || engineRaw === "duckduckgo" || engineRaw === "bing"
-                        ? (engineRaw as SearchEngineId)
-                        : "google";
-                setSearchEngine(engine);
+                applySettingsRaw(settingsRaw);
 
                 const [h, b, t, ct, dl] = await Promise.all([
                     AsyncStorage.getItem("history"),
@@ -474,7 +621,37 @@ export default function BrowserScreen() {
             } catch {}
             setHydrated(true);
         })();
-    }, []);
+    }, [applySettingsRaw]);
+
+    // Re-sync settings when returning from the Settings screen.
+    useFocusEffect(
+        useCallback(() => {
+            let cancelled = false;
+            (async () => {
+                try {
+                    const raw = await AsyncStorage.getItem("settingsV1");
+                    if (!cancelled) applySettingsRaw(raw);
+                } catch {}
+            })();
+            return () => {
+                cancelled = true;
+            };
+        }, [applySettingsRaw])
+    );
+
+    useEffect(() => {
+        if (!hydrated) return;
+        if (appliedInitialNavRef.current) return;
+
+        // Apply initial deep link params once (from native home screen or external link)
+        if (initialEngineParam) setSearchEngine(initialEngineParam as SearchEngineId);
+        const target = initialUrlParam ?? initialInputParam;
+        if (target) {
+            setTimeout(() => navigateTo(target), 0);
+        }
+
+        appliedInitialNavRef.current = true;
+    }, [hydrated, initialEngineParam, initialInputParam, initialUrlParam, navigateTo]);
 
     // Persist changes when enabled
     useEffect(() => {
@@ -506,6 +683,155 @@ export default function BrowserScreen() {
         if (!hydrated) return;
         AsyncStorage.setItem("searchEngine", searchEngine).catch(() => {});
     }, [searchEngine, hydrated]);
+
+        const adBlockNavBlockedHosts = useMemo(
+                () =>
+                        [
+                                "doubleclick.net",
+                                "googlesyndication.com",
+                                "googleadservices.com",
+                                "googletagservices.com",
+                                "googletagmanager.com",
+                                "adservice.google.com",
+                                "adsystem.com",
+                                "taboola.com",
+                                "outbrain.com",
+                                "scorecardresearch.com",
+                        ],
+                []
+        );
+
+        const adBlockInjectedJs = useMemo(() => {
+                if (!settings.adBlockEnabled || !settings.javaScriptEnabled) return "true;";
+
+                const css = `
+/* Pyraxis adblock (best-effort cosmetic) */
+[id^="ad-"] , [id^="ad_"] , [id*="_ad_"] ,
+[class~="ad"] , [class^="ad-"] , [class*=" ad-"] ,
+[class^="ads-"] , [class*=" ads-"] ,
+.ad-container, .ad-wrapper, .ad-banner, .ad-slot, .adunit,
+.ads, .adsbox, .adsbygoogle, .advert, .advertisement,
+#ad, #ads, #advert, #advertisement,
+iframe[id^="google_ads_iframe"], iframe[src*="doubleclick"], iframe[src*="googlesyndication"],
+div[id^="google_ads_iframe"],
+[aria-label="advertisement" i], [aria-label*="sponsored" i] {
+    display: none !important;
+    visibility: hidden !important;
+    opacity: 0 !important;
+}
+`;
+
+                const blockedHostsJson = JSON.stringify(adBlockNavBlockedHosts);
+                const cssJson = JSON.stringify(css);
+
+                return `(() => {
+    try {
+        if (window.__pyraxisAdblockInstalled) return true;
+        window.__pyraxisAdblockInstalled = true;
+
+        // Popup / new-window blocker
+        try {
+            if (!window.__pyraxisOriginalOpen) window.__pyraxisOriginalOpen = window.open;
+            window.open = function(){ return null; };
+        } catch (e) {}
+
+        const blockedHosts = ${blockedHostsJson};
+        const isBlockedUrl = (u) => {
+            try {
+                const url = new URL(u, location.href);
+                const host = (url.hostname || '').toLowerCase();
+                for (var i = 0; i < blockedHosts.length; i++) {
+                    const h = blockedHosts[i];
+                    if (host === h || host.endsWith('.' + h)) return true;
+                }
+            } catch (e) {}
+            return false;
+        };
+
+        // Inject CSS for common ad containers
+        try {
+            var style = document.getElementById('__pyraxis_adblock_css__');
+            if (!style) {
+                style = document.createElement('style');
+                style.id = '__pyraxis_adblock_css__';
+                style.textContent = ${cssJson};
+                (document.head || document.documentElement).appendChild(style);
+            }
+        } catch (e) {}
+
+        const sweep = () => {
+            try {
+                // Remove obvious ad iframes by src host
+                const iframes = document.querySelectorAll('iframe[src]');
+                for (var i = 0; i < iframes.length; i++) {
+                    const fr = iframes[i];
+                    const src = fr.getAttribute('src') || '';
+                    if (src && isBlockedUrl(src)) {
+                        try {
+                            if (!fr.getAttribute('data-pyraxis-adblock-hidden')) {
+                                fr.setAttribute('data-pyraxis-adblock-hidden', '1');
+                                fr.setAttribute('data-pyraxis-adblock-prev-display', fr.style.display || '');
+                                fr.setAttribute('data-pyraxis-adblock-prev-visibility', fr.style.visibility || '');
+                            }
+                        } catch (e) {}
+                        fr.style.display = 'none';
+                        fr.style.visibility = 'hidden';
+                    }
+                }
+            } catch (e) {}
+        };
+
+        sweep();
+        const mo = new MutationObserver(() => {
+            if (window.__pyraxisAdblockPending) return;
+            window.__pyraxisAdblockPending = true;
+            setTimeout(() => { window.__pyraxisAdblockPending = false; sweep(); }, 250);
+        });
+        mo.observe(document.documentElement, { childList: true, subtree: true });
+                window.__pyraxisAdblockObserver = mo;
+    } catch (e) {}
+    return true;
+})();`;
+        }, [adBlockNavBlockedHosts, settings.adBlockEnabled, settings.javaScriptEnabled]);
+
+        const adBlockDisableCleanupJs = useMemo(
+                () =>
+                        `(() => {
+    try {
+        var style = document.getElementById('__pyraxis_adblock_css__');
+        if (style && style.parentNode) style.parentNode.removeChild(style);
+
+        // Unhide iframes we hid via inline styles
+        try {
+            var hidden = document.querySelectorAll('[data-pyraxis-adblock-hidden="1"]');
+            for (var i = 0; i < hidden.length; i++) {
+                var el = hidden[i];
+                var prevDisplay = el.getAttribute('data-pyraxis-adblock-prev-display') || '';
+                var prevVis = el.getAttribute('data-pyraxis-adblock-prev-visibility') || '';
+                try { el.style.display = prevDisplay; } catch (e) {}
+                try { el.style.visibility = prevVis; } catch (e) {}
+                try {
+                    el.removeAttribute('data-pyraxis-adblock-hidden');
+                    el.removeAttribute('data-pyraxis-adblock-prev-display');
+                    el.removeAttribute('data-pyraxis-adblock-prev-visibility');
+                } catch (e) {}
+            }
+        } catch (e) {}
+
+        if (window.__pyraxisAdblockObserver && window.__pyraxisAdblockObserver.disconnect) {
+            try { window.__pyraxisAdblockObserver.disconnect(); } catch (e) {}
+            window.__pyraxisAdblockObserver = null;
+        }
+        if (window.__pyraxisOriginalOpen) {
+            try { window.open = window.__pyraxisOriginalOpen; } catch (e) {}
+        }
+        window.__pyraxisAdblockInstalled = false;
+        window.__pyraxisAdblockPending = false;
+    } catch (e) {}
+    return true;
+})();`,
+                []
+        );
 
     useEffect(() => {
         if (!hydrated) return;
@@ -555,15 +881,7 @@ export default function BrowserScreen() {
                 break;
             case "new-incognito-tab":
                 // Explicitly create an incognito tab
-                addTab(HOME, { incognito: true });
-                // mark latest tab as incognito
-                setTabs((prev) =>
-                    prev.map((t, i) =>
-                        i === prev.length - 1
-                            ? { ...t, incognito: true, title: "Incognito" }
-                            : t
-                    )
-                );
+                addTab(INCOGNITO_INTERNAL, { incognito: true });
                 break;
             case "history":
                 setHistoryVisible(true);
@@ -571,7 +889,7 @@ export default function BrowserScreen() {
             case "delete-browsing-data":
                 setHistory([]);
                 setBookmarks([]);
-                showToast("Browsing data deleted", "trash-2");
+                showToast("Browsing data deleted", "trash-2", "success");
                 break;
             case "downloads":
                 setDownloadsVisible(true);
@@ -581,7 +899,7 @@ export default function BrowserScreen() {
                 break;
             case "add-bookmark":
                 addBookmark();
-                showToast("Bookmark added", "bookmark");
+                showToast("Bookmark added", "bookmark", "success");
                 break;
             case "recent-tabs":
                 setRecentVisible(true);
@@ -598,7 +916,7 @@ export default function BrowserScreen() {
             case "add-to-home":
                 // As an in-app alternative, add to bookmarks and confirm
                 addBookmark();
-                showToast("Saved to bookmarks", "bookmark");
+                showToast("Saved to bookmarks", "bookmark", "success");
                 break;
             case "desktop-site":
                 // payload is boolean
@@ -610,15 +928,35 @@ export default function BrowserScreen() {
                 // Force reload to apply new UA
                 setTimeout(() => reloadActive(), 50);
                 break;
+            case "adblock":
+                // payload is boolean
+                {
+                    const enabled = !!payload;
+                    setSettings((prev) => ({ ...prev, adBlockEnabled: enabled }));
+                    persistSettingsPatch({ adBlockEnabled: enabled });
+                    if (!enabled) {
+                        // Remove our injected styles/observer immediately so ads can reappear.
+                        getActiveWebview()?.injectJavaScript?.(adBlockDisableCleanupJs);
+                    }
+                }
+                // Reload so injected logic applies immediately
+                setTimeout(() => reloadActive(), 50);
+                break;
             case "settings":
-                setSettingsVisible(true);
+                haptics.light();
+                try {
+                    router.push("/settings");
+                } catch {
+                    showToast("Could not open settings", "alert-circle", "error");
+                }
                 break;
             case "help-feedback":
+                haptics.light();
                 // Navigate to a dedicated Help page
                 try {
                     router.push("/help");
                 } catch {
-                    showToast("Could not open help page", "alert-circle");
+                    showToast("Could not open help page", "alert-circle", "error");
                 }
                 break;
             default:
@@ -695,12 +1033,22 @@ export default function BrowserScreen() {
                     onLayout={(e) => setAddressBarHeight(e.nativeEvent.layout.height)}
                 >
                     <TextInput
+                        ref={addressInputRef}
                         value={address}
                         onChangeText={setAddress}
                         onSubmitEditing={(e) => navigateTo(e.nativeEvent.text)}
                         placeholder="Enter URL or search"
                         keyboardType="url"
                         autoCapitalize="none"
+                        selectTextOnFocus
+                        onFocus={() => {
+                            const end = (address ?? "").length;
+                            requestAnimationFrame(() => {
+                                try {
+                                    addressInputRef.current?.setNativeProps?.({ selection: { start: 0, end } });
+                                } catch {}
+                            });
+                        }}
                         style={[
                             styles.input,
                             {
@@ -712,16 +1060,23 @@ export default function BrowserScreen() {
                         placeholderTextColor={inputBorder}
                         returnKeyType="go"
                     />
-                    <TouchableOpacity
+                    <Pressable
                         accessibilityRole="button"
                         onPress={() => {
+                            haptics.success();
                             addBookmark(undefined, true);
-                            showToast("Bookmark added", "bookmark");
+                            showToast("Bookmark added", "bookmark", "success");
                         }}
-                        style={styles.iconButton}
+                        style={({ pressed }) => [
+                            styles.iconButton,
+                            { 
+                                opacity: pressed ? 0.7 : 1, 
+                                transform: [{ scale: pressed ? 0.9 : 1 }] 
+                            }
+                        ]}
                     >
                         <Feather name="star" size={18} color={iconColor} />
-                    </TouchableOpacity>
+                    </Pressable>
                 </View>
             )}
 
@@ -777,20 +1132,42 @@ export default function BrowserScreen() {
                 ]}
             >
                 {loading && !showTabSwitcher && (
-                    <View
+                    <Animated.View
                         style={[
                             styles.loadingOverlay,
-                            { backgroundColor: "rgba(0,0,0,0.6)" },
+                            { opacity: loadingOpacityAnim },
                         ]}
+                        pointerEvents="none"
                     >
-                        <ActivityIndicator size="small" color={iconColor} />
-                        <ThemedText>Loading…</ThemedText>
-                    </View>
+                        <LinearGradient
+                            colors={["#FF6B2C", "#FF8F5C"]}
+                            start={{ x: 0, y: 0 }}
+                            end={{ x: 1, y: 0 }}
+                            style={styles.loadingBar}
+                        >
+                            <Animated.View
+                                style={{
+                                    ...StyleSheet.absoluteFillObject,
+                                    backgroundColor: "rgba(255,255,255,0.4)",
+                                    borderRadius: 2,
+                                    transform: [{
+                                        translateX: loadingProgressAnim.interpolate({
+                                            inputRange: [0, 1],
+                                            outputRange: [-150, 150],
+                                        })
+                                    }],
+                                    width: 60,
+                                }}
+                            />
+                        </LinearGradient>
+                    </Animated.View>
                 )}
                 {/* Render only the active tab's WebView to avoid layout splitting. */}
                 {(() => {
                     const activeTab = tabs.find((t) => t.id === activeTabId);
                     if (!activeTab) return null;
+                    const activeUrl = typeof activeTab.url === "string" ? activeTab.url : "";
+                    const isInternalUrl = activeUrl.toLowerCase().startsWith("pyraxis://");
                     const desktopUA =
                         Platform.select({
                             ios: "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
@@ -809,8 +1186,24 @@ export default function BrowserScreen() {
                                     }}
                                     onGoHome={() => {
                                         setOfflineVisible(false);
-                                        navigateTo(HOME);
+                                        const active = tabs.find((t) => t.id === activeTabId);
+                                        navigateTo(active?.incognito ? INCOGNITO_INTERNAL : HOME_INTERNAL);
                                     }}
+                                />
+                            </View>
+                        );
+                    }
+
+                    if (isInternalUrl) {
+                        const isIncognitoTab = !!activeTab?.incognito;
+                        return (
+                            <View style={styles.webviewActive}>
+                                <StartPage
+                                    searchEngine={searchEngine}
+                                    setSearchEngine={setSearchEngine}
+                                    onSubmitInput={(input) => navigateTo(input)}
+                                    onOpenUrl={(url) => navigateTo(url)}
+                                    variant={isIncognitoTab ? "incognito" : "normal"}
                                 />
                             </View>
                         );
@@ -818,11 +1211,32 @@ export default function BrowserScreen() {
 
                     return (
                         <WebView
-                            key={activeTab.id}
+                            key={`${activeTab.id}:${settings.adBlockEnabled ? "ab1" : "ab0"}:${settings.javaScriptEnabled ? "js1" : "js0"}`}
                             originWhitelist={["*"]}
-                            source={{ uri: activeTab.url }}
+                            source={{ uri: activeUrl }}
                             ref={activeTab.ref}
                             startInLoadingState
+                            onShouldStartLoadWithRequest={(req) => {
+                                const reqUrl = (req as any)?.url;
+                                if (settings.adBlockEnabled && typeof reqUrl === "string") {
+                                    try {
+                                        const u = new URL(reqUrl);
+                                        const host = (u.hostname || "").toLowerCase();
+                                        if (
+                                            adBlockNavBlockedHosts.some(
+                                                (h) => host === h || host.endsWith("." + h)
+                                            )
+                                        ) {
+                                            return false;
+                                        }
+                                    } catch {}
+                                }
+                                if (typeof reqUrl === "string" && reqUrl.toLowerCase().startsWith("pyraxis://")) {
+                                    navigateTo(reqUrl);
+                                    return false;
+                                }
+                                return true;
+                            }}
                             onLoadStart={() => {
                                 setLoading(true);
                                 startLoadingFailsafe();
@@ -855,17 +1269,22 @@ export default function BrowserScreen() {
                                 const downloadUrl = (nativeEvent as any)?.downloadUrl;
                                 if (typeof downloadUrl === "string" && downloadUrl) {
                                     recordDownload(downloadUrl);
-                                    showToast("Downloading…", "logo");
+                                    showToast("Downloading…", "logo", "info");
                                     Linking.openURL(downloadUrl).catch(() => {});
                                 }
                             }}
                             style={styles.webviewActive}
-                            javaScriptEnabled
+                            injectedJavaScriptBeforeContentLoaded={
+                                settings.adBlockEnabled && settings.javaScriptEnabled
+                                    ? adBlockInjectedJs
+                                    : undefined
+                            }
+                            javaScriptEnabled={!!settings.javaScriptEnabled}
                             domStorageEnabled
                             userAgent={activeTab.desktop ? desktopUA : undefined}
                             incognito={!!activeTab.incognito}
                             sharedCookiesEnabled={!activeTab.incognito}
-                            thirdPartyCookiesEnabled={!activeTab.incognito}
+                            thirdPartyCookiesEnabled={!activeTab.incognito && !!settings.thirdPartyCookiesEnabled}
                             cacheEnabled={!activeTab.incognito}
                         />
                     );
@@ -881,7 +1300,48 @@ export default function BrowserScreen() {
                 onSwitch={(id) => switchTab(id)}
                 onCloseTab={(id, options) => closeTabAndRecord(id, options)}
                 onAddTab={() => addTab()}
-                onAddIncognitoTab={() => addTab(HOME, { incognito: true })}
+                onAddIncognitoTab={() => addTab(INCOGNITO_INTERNAL, { incognito: true })}
+                renderTabPreview={(t, size) => {
+                    const url = typeof t.url === "string" ? t.url : "";
+                    if (!url.toLowerCase().startsWith("pyraxis://")) return null;
+
+                    // Render at the same size the user sees in the Browser (webviewContainer)
+                    // then scale it down into the preview box.
+                    const baseW = Math.max(1, windowWidth);
+                    const baseH = Math.max(1, windowHeight - bottomNavHeight - addressBarHeight);
+                    const scale = Math.min(size.width / baseW, size.height / baseH);
+
+                    return (
+                        <View
+                            pointerEvents="none"
+                            style={{
+                                width: size.width,
+                                height: size.height,
+                                overflow: "hidden",
+                                backgroundColor: webviewBg,
+                            }}
+                        >
+                            <View
+                                style={{
+                                    width: baseW,
+                                    height: baseH,
+                                    position: "absolute",
+                                    left: (size.width - baseW) / 2,
+                                    top: (size.height - baseH) / 2,
+                                    transform: [{ scale }],
+                                }}
+                            >
+                                <StartPage
+                                    searchEngine={searchEngine}
+                                    setSearchEngine={setSearchEngine}
+                                    onSubmitInput={() => {}}
+                                    onOpenUrl={() => {}}
+                                    variant={t.incognito ? "incognito" : "normal"}
+                                />
+                            </View>
+                        </View>
+                    );
+                }}
                 availableHeight={Math.max(0, (typeof window !== 'undefined' ? window.innerHeight : 0) - bottomNavHeight) || undefined}
                 bottomNavHeight={bottomNavHeight}
             />
@@ -893,7 +1353,10 @@ export default function BrowserScreen() {
                 canGoForward={canGoForward}
                 onBack={goBackActive}
                 onForward={goForwardActive}
-                onHome={() => navigateTo(HOME)}
+                onHome={() => {
+                    const active = tabs.find((t) => t.id === activeTabId);
+                    navigateTo(active?.incognito ? INCOGNITO_INTERNAL : HOME_INTERNAL);
+                }}
                 onTabSwitcher={() => setShowTabSwitcher((v) => !v)}
                 onNewTab={() => addTab()}
                 onReload={reloadActive}
@@ -905,381 +1368,256 @@ export default function BrowserScreen() {
                 visible={sheetVisible}
                 onClose={() => setSheetVisible(false)}
                 onAction={handleOverflowAction}
+                adBlockEnabled={!!settings.adBlockEnabled}
+                desktopSite={!!tabs.find((t) => t.id === activeTabId)?.desktop}
             />
 
             {!!toastMessage && (
-                <View
+                <Animated.View
                     pointerEvents="none"
                     style={{
                         position: "absolute",
-                        left: 12,
-                        right: 12,
+                        left: 16,
+                        right: 16,
                         top: showTabSwitcher
-                            ? (insets.top || 0) + 12
-                            : Math.max((insets.top || 0) + 12, addressBarHeight + 6),
+                            ? (insets.top || 0) + 16
+                            : Math.max((insets.top || 0) + 16, addressBarHeight + 10),
                         alignItems: "center",
                         zIndex: 9999,
+                        opacity: toastAnimRef,
+                        transform: [{
+                            translateY: toastAnimRef.interpolate({
+                                inputRange: [0, 1],
+                                outputRange: [-20, 0],
+                            })
+                        }, {
+                            scale: toastAnimRef.interpolate({
+                                inputRange: [0, 1],
+                                outputRange: [0.9, 1],
+                            })
+                        }],
                     }}
                 >
-                    <View
+                    <LinearGradient
+                        colors={
+                            toastType === "success" ? ["#10B981", "#059669"] :
+                            toastType === "error" ? ["#EF4444", "#DC2626"] :
+                            toastType === "warning" ? ["#F59E0B", "#D97706"] :
+                            ["#3B82F6", "#2563EB"]
+                        }
+                        start={{ x: 0, y: 0 }}
+                        end={{ x: 1, y: 1 }}
                         style={{
-                            backgroundColor: toastBg,
-                            borderRadius: 10,
-                            paddingVertical: 10,
-                            paddingHorizontal: 12,
+                            borderRadius: 14,
+                            paddingVertical: 12,
+                            paddingHorizontal: 16,
                             maxWidth: "100%",
-                            opacity: 0.94,
                             flexDirection: "row",
                             alignItems: "center",
-                            gap: 8,
+                            gap: 10,
                             shadowColor: "#000",
-                            shadowOpacity: 0.25,
-                            shadowRadius: 10,
-                            shadowOffset: { width: 0, height: 4 },
-                            elevation: 6,
+                            shadowOpacity: 0.3,
+                            shadowRadius: 16,
+                            shadowOffset: { width: 0, height: 6 },
+                            elevation: 8,
                         }}
                     >
                         {toastIcon === "logo" ? (
-                            <Image
-                                source={APP_LOGO}
-                                style={{ width: 16, height: 16, borderRadius: 3 }}
-                                resizeMode="contain"
-                            />
+                            <View style={{
+                                width: 24,
+                                height: 24,
+                                borderRadius: 6,
+                                backgroundColor: "rgba(255,255,255,0.2)",
+                                alignItems: "center",
+                                justifyContent: "center",
+                            }}>
+                                <Image
+                                    source={APP_LOGO}
+                                    style={{ width: 16, height: 16, borderRadius: 3 }}
+                                    resizeMode="contain"
+                                />
+                            </View>
                         ) : (
-                            <Feather name={toastIcon} size={16} color={toastText} />
+                            <View style={{
+                                width: 24,
+                                height: 24,
+                                borderRadius: 6,
+                                backgroundColor: "rgba(255,255,255,0.2)",
+                                alignItems: "center",
+                                justifyContent: "center",
+                            }}>
+                                <Feather name={toastIcon} size={14} color="#fff" />
+                            </View>
                         )}
-                        <Text style={{ color: toastText, fontWeight: "600" }}>
+                        <Text style={{ color: "#fff", fontWeight: "600", fontSize: 14 }}>
                             {toastMessage}
                         </Text>
-                    </View>
-                </View>
+                    </LinearGradient>
+                </Animated.View>
             )}
 
-            {/* History modal */}
-            <Modal
+            {/* History Sheet */}
+            <ModalSheet
                 visible={historyVisible}
-                animationType="slide"
-                transparent
-                onRequestClose={() => setHistoryVisible(false)}
+                onClose={() => setHistoryVisible(false)}
+                title="History"
+                subtitle={`${history.length} pages visited`}
+                icon="clock"
+                iconColor="#3B82F6"
+                isEmpty={history.length === 0}
+                emptyState={{
+                    icon: "clock",
+                    title: "No browsing history",
+                    subtitle: "Pages you visit will appear here for quick access",
+                }}
+                headerAction={history.length > 0 ? {
+                    icon: "trash-2",
+                    label: "Clear history",
+                    onPress: () => {
+                        setHistory([]);
+                        showToast("History cleared", "trash-2", "success");
+                    },
+                } : undefined}
             >
-                <ThemedView style={{ flex: 1, justifyContent: "flex-end" }}>
-                    <TouchableOpacity
-                        style={{ flex: 1 }}
-                        onPress={() => setHistoryVisible(false)}
-                    />
-                    <View
-                        style={{
-                            maxHeight: "60%",
-                            borderTopLeftRadius: 12,
-                            borderTopRightRadius: 12,
-                            backgroundColor: webviewBg,
-                        }}
-                    >
-                        <ScrollView>
-                            {history.length === 0 ? (
-                                <View style={{ padding: 12 }}>
-                                    <Text style={{ color: iconColor }}>
-                                        No history.
-                                    </Text>
-                                </View>
-                            ) : (
-                                history.map((h, i) => (
-                                    <TouchableOpacity
-                                        key={i}
-                                        onPress={() => {
-                                            navigateTo(h.url);
-                                            setHistoryVisible(false);
-                                        }}
-                                        style={{
-                                            padding: 12,
-                                            borderBottomWidth: 1,
-                                            borderBottomColor: "#222",
-                                        }}
-                                    >
-                                        <Text style={{ color: iconColor }}>
-                                            {h.url}
-                                        </Text>
-                                    </TouchableOpacity>
-                                ))
-                            )}
-                        </ScrollView>
-                    </View>
-                </ThemedView>
-            </Modal>
+                {history.map((h, i) => {
+                    let displayTitle = h.url;
+                    try {
+                        const urlObj = new URL(h.url);
+                        displayTitle = urlObj.hostname.replace("www.", "");
+                    } catch {}
+                    return (
+                        <ModalListItem
+                            key={`${h.url}-${i}`}
+                            title={displayTitle}
+                            subtitle={h.url}
+                            icon="globe"
+                            iconColor="#3B82F6"
+                            timestamp={h.ts}
+                            onPress={() => {
+                                navigateTo(h.url);
+                                setHistoryVisible(false);
+                            }}
+                            onDelete={() => {
+                                setHistory(prev => prev.filter((_, idx) => idx !== i));
+                            }}
+                        />
+                    );
+                })}
+            </ModalSheet>
 
-            {/* Bookmarks modal */}
-            <Modal
+            {/* Bookmarks Sheet */}
+            <ModalSheet
                 visible={bookmarksVisible}
-                animationType="slide"
-                transparent
-                onRequestClose={() => setBookmarksVisible(false)}
+                onClose={() => setBookmarksVisible(false)}
+                title="Bookmarks"
+                subtitle={`${bookmarks.length} saved`}
+                icon="bookmark"
+                iconColor="#F59E0B"
+                isEmpty={bookmarks.length === 0}
+                emptyState={{
+                    icon: "bookmark",
+                    title: "No bookmarks yet",
+                    subtitle: "Tap the star icon to save your favorite pages",
+                }}
             >
-                <ThemedView style={{ flex: 1, justifyContent: "flex-end" }}>
-                    <TouchableOpacity
-                        style={{ flex: 1 }}
-                        onPress={() => setBookmarksVisible(false)}
-                    />
-                    <View
-                        style={{
-                            maxHeight: "60%",
-                            borderTopLeftRadius: 12,
-                            borderTopRightRadius: 12,
-                            backgroundColor: webviewBg,
-                        }}
-                    >
-                        <ScrollView>
-                            {bookmarks.length === 0 ? (
-                                <View style={{ padding: 12 }}>
-                                    <Text style={{ color: iconColor }}>
-                                        No bookmarks.
-                                    </Text>
-                                </View>
-                            ) : (
-                                bookmarks.map((b, i) => (
-                                    <TouchableOpacity
-                                        key={i}
-                                        onPress={() => {
-                                            navigateTo(b);
-                                            setBookmarksVisible(false);
-                                        }}
-                                        style={{
-                                            padding: 12,
-                                            borderBottomWidth: 1,
-                                            borderBottomColor: "#222",
-                                        }}
-                                    >
-                                        <Text style={{ color: iconColor }}>
-                                            {b}
-                                        </Text>
-                                    </TouchableOpacity>
-                                ))
-                            )}
-                        </ScrollView>
-                    </View>
-                </ThemedView>
-            </Modal>
+                {bookmarks.map((b, i) => {
+                    let displayTitle = b;
+                    try {
+                        const urlObj = new URL(b);
+                        displayTitle = urlObj.hostname.replace("www.", "");
+                    } catch {}
+                    return (
+                        <ModalListItem
+                            key={`${b}-${i}`}
+                            title={displayTitle}
+                            subtitle={b}
+                            icon="star"
+                            iconColor="#F59E0B"
+                            onPress={() => {
+                                navigateTo(b);
+                                setBookmarksVisible(false);
+                            }}
+                            onDelete={() => {
+                                setBookmarks(prev => prev.filter((_, idx) => idx !== i));
+                            }}
+                        />
+                    );
+                })}
+            </ModalSheet>
 
-            {/* Downloads modal */}
-            <Modal
+            {/* Downloads Sheet */}
+            <ModalSheet
                 visible={downloadsVisible}
-                animationType="slide"
-                transparent
-                onRequestClose={() => setDownloadsVisible(false)}
+                onClose={() => setDownloadsVisible(false)}
+                title="Downloads"
+                subtitle={`${downloads.length} files`}
+                icon="download"
+                iconColor="#10B981"
+                isEmpty={downloads.length === 0}
+                emptyState={{
+                    icon: "download",
+                    title: "No downloads",
+                    subtitle: "Files you download will appear here",
+                }}
             >
-                <ThemedView style={{ flex: 1, justifyContent: "flex-end" }}>
-                    <TouchableOpacity
-                        style={{ flex: 1 }}
-                        onPress={() => setDownloadsVisible(false)}
-                    />
-                    <View
-                        style={{
-                            maxHeight: "60%",
-                            borderTopLeftRadius: 12,
-                            borderTopRightRadius: 12,
-                            backgroundColor: webviewBg,
-                            padding: 12,
+                {downloads.map((d, i) => (
+                    <ModalListItem
+                        key={`${d.url}-${i}`}
+                        title={d.filename || "Unknown file"}
+                        subtitle={d.url}
+                        icon="file"
+                        iconColor="#10B981"
+                        timestamp={d.ts}
+                        onPress={() => {
+                            Linking.openURL(d.url).catch(() =>
+                                showToast("Could not open download", "alert-circle", "error")
+                            );
                         }}
-                    >
-                        <Text style={{ color: iconColor, fontWeight: "600", marginBottom: 8 }}>
-                            Downloads
-                        </Text>
-                        <ScrollView>
-                            {downloads.length === 0 ? (
-                                <View style={{ paddingVertical: 12 }}>
-                                    <Text style={{ color: iconColor }}>
-                                        No downloads yet.
-                                    </Text>
-                                </View>
-                            ) : (
-                                downloads.map((d, i) => (
-                                    <TouchableOpacity
-                                        key={i}
-                                        onPress={() => {
-                                            Linking.openURL(d.url).catch(() =>
-                                                showToast("Could not open download", "alert-circle")
-                                            );
-                                        }}
-                                        style={{
-                                            paddingVertical: 12,
-                                            borderBottomWidth: 1,
-                                            borderBottomColor: "#222",
-                                        }}
-                                    >
-                                        <Text style={{ color: iconColor }} numberOfLines={2}>
-                                            {d.filename || d.url}
-                                        </Text>
-                                    </TouchableOpacity>
-                                ))
-                            )}
-                        </ScrollView>
-                    </View>
-                </ThemedView>
-            </Modal>
+                        onDelete={() => {
+                            setDownloads(prev => prev.filter((_, idx) => idx !== i));
+                        }}
+                    />
+                ))}
+            </ModalSheet>
 
-            {/* Recent tabs modal */}
-            <Modal
+            {/* Recent Tabs Sheet */}
+            <ModalSheet
                 visible={recentVisible}
-                animationType="slide"
-                transparent
-                onRequestClose={() => setRecentVisible(false)}
+                onClose={() => setRecentVisible(false)}
+                title="Recently Closed"
+                subtitle={`${closedTabs.length} tabs`}
+                icon="rotate-ccw"
+                iconColor="#8B5CF6"
+                isEmpty={closedTabs.length === 0}
+                emptyState={{
+                    icon: "rotate-ccw",
+                    title: "No recently closed tabs",
+                    subtitle: "Tabs you close will appear here so you can reopen them",
+                }}
             >
-                <ThemedView style={{ flex: 1, justifyContent: "flex-end" }}>
-                    <TouchableOpacity
-                        style={{ flex: 1 }}
-                        onPress={() => setRecentVisible(false)}
-                    />
-                    <View
-                        style={{
-                            maxHeight: "60%",
-                            borderTopLeftRadius: 12,
-                            borderTopRightRadius: 12,
-                            backgroundColor: webviewBg,
-                        }}
-                    >
-                        <ScrollView>
-                            {closedTabs.length === 0 ? (
-                                <View style={{ padding: 12 }}>
-                                    <Text style={{ color: iconColor }}>
-                                        No recent tabs.
-                                    </Text>
-                                </View>
-                            ) : (
-                                closedTabs.map((c, i) => (
-                                    <TouchableOpacity
-                                        key={i}
-                                        onPress={() => {
-                                            addTab(c.url);
-                                            setRecentVisible(false);
-                                        }}
-                                        style={{
-                                            padding: 12,
-                                            borderBottomWidth: 1,
-                                            borderBottomColor: "#222",
-                                        }}
-                                    >
-                                        <Text style={{ color: iconColor }}>
-                                            {c.title || c.url}
-                                        </Text>
-                                    </TouchableOpacity>
-                                ))
-                            )}
-                        </ScrollView>
-                    </View>
-                </ThemedView>
-            </Modal>
-
-            {/* Settings modal (placeholder) */}
-            <Modal
-                visible={settingsVisible}
-                animationType="slide"
-                transparent
-                onRequestClose={() => setSettingsVisible(false)}
-            >
-                <ThemedView style={{ flex: 1, justifyContent: "flex-end" }}>
-                    <TouchableOpacity
-                        style={{ flex: 1 }}
-                        onPress={() => setSettingsVisible(false)}
-                    />
-                    <View
-                        style={{
-                            maxHeight: "40%",
-                            borderTopLeftRadius: 12,
-                            borderTopRightRadius: 12,
-                            backgroundColor: webviewBg,
-                            padding: 12,
-                        }}
-                    >
-                        <Text style={{ color: iconColor, marginBottom: 8 }}>
-                            Settings
-                        </Text>
-
-                        <View
-                            style={{
-                                borderWidth: 1,
-                                borderColor: "#222",
-                                borderRadius: 8,
-                                marginBottom: 12,
-                                overflow: "hidden",
+                {closedTabs.map((c, i) => {
+                    let displayTitle = c.title || c.url;
+                    try {
+                        if (!c.title) {
+                            const urlObj = new URL(c.url);
+                            displayTitle = urlObj.hostname.replace("www.", "");
+                        }
+                    } catch {}
+                    return (
+                        <ModalListItem
+                            key={`${c.id}-${i}`}
+                            title={displayTitle}
+                            subtitle={c.url}
+                            icon="layout"
+                            iconColor="#8B5CF6"
+                            onPress={() => {
+                                addTab(c.url);
+                                setRecentVisible(false);
                             }}
-                        >
-                            <View style={{ paddingVertical: 10, paddingHorizontal: 12 }}>
-                                <Text style={{ color: iconColor, fontWeight: "600" }}>
-                                    Search engine
-                                </Text>
-                            </View>
-                            {SEARCH_ENGINES.map((e) => {
-                                const selected = e.id === searchEngine;
-                                return (
-                                    <TouchableOpacity
-                                        key={e.id}
-                                        onPress={() => setSearchEngine(e.id)}
-                                        style={{
-                                            paddingVertical: 10,
-                                            paddingHorizontal: 12,
-                                            borderTopWidth: 1,
-                                            borderTopColor: "#222",
-                                            flexDirection: "row",
-                                            alignItems: "center",
-                                            justifyContent: "space-between",
-                                        }}
-                                    >
-                                        <Text style={{ color: iconColor }}>{e.label}</Text>
-                                        {selected && (
-                                            <Feather name="check" size={18} color={iconColor} />
-                                        )}
-                                    </TouchableOpacity>
-                                );
-                            })}
-                        </View>
-
-                        <TouchableOpacity
-                            onPress={() =>
-                                showToast(
-                                    "Translate feature not implemented yet",
-                                    "info"
-                                )
-                            }
-                            style={{
-                                paddingVertical: 10,
-                                paddingHorizontal: 12,
-                                borderWidth: 1,
-                                borderColor: "#222",
-                                borderRadius: 8,
-                                marginBottom: 12,
-                            }}
-                        >
-                            <Text style={{ color: iconColor }}>
-                                Translate (placeholder)
-                            </Text>
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                            onPress={async () => {
-                                const next = !persistEnabled;
-                                setPersistEnabled(next);
-                                try {
-                                    await AsyncStorage.setItem(
-                                        "persistEnabled",
-                                        next ? "true" : "false"
-                                    );
-                                } catch {}
-                            }}
-                            style={{
-                                paddingVertical: 10,
-                                paddingHorizontal: 12,
-                                borderWidth: 1,
-                                borderColor: "#222",
-                                borderRadius: 8,
-                            }}
-                        >
-                            <Text style={{ color: iconColor }}>
-                                {persistEnabled
-                                    ? "Keep history on device: On"
-                                    : "Keep history on device: Off"}
-                            </Text>
-                        </TouchableOpacity>
-                    </View>
-                </ThemedView>
-            </Modal>
+                        />
+                    );
+                })}
+            </ModalSheet>
 
             {/* Help & feedback handled via dedicated /help page */}
         </ThemedView>
@@ -1330,15 +1668,17 @@ const styles = StyleSheet.create({
 
     loadingOverlay: {
         position: "absolute",
-        top: 8,
-        right: 8,
+        top: 0,
+        left: 0,
+        right: 0,
+        height: 3,
         zIndex: 999,
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 8,
-        backgroundColor: "rgba(255,255,255,0.9)",
-        padding: 6,
-        borderRadius: 6,
+        overflow: "hidden",
+    },
+    loadingBar: {
+        flex: 1,
+        borderRadius: 2,
+        overflow: "hidden",
     },
 
     tabBar: {

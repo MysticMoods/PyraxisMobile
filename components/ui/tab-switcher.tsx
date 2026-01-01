@@ -1,5 +1,7 @@
-import { useThemeColor } from "@/hooks/use-theme-color";
+import { useColorScheme } from "@/hooks/use-color-scheme";
+import { haptics } from "@/hooks/use-haptics";
 import { Feather } from "@expo/vector-icons";
+import { LinearGradient } from "expo-linear-gradient";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
     Animated,
@@ -10,7 +12,6 @@ import {
     ScrollView,
     StyleSheet,
     Text,
-    TouchableOpacity,
     useWindowDimensions,
     View
 } from 'react-native';
@@ -18,6 +19,8 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { WebView } from "react-native-webview";
 
 type Tab = { id: string; url: string; title?: string; incognito?: boolean };
+
+type PreviewSize = { width: number; height: number };
 
 type Props = {
     visible: boolean;
@@ -30,12 +33,14 @@ type Props = {
     onAddIncognitoTab?: () => void;
     availableHeight?: number;
     bottomNavHeight?: number;
+    renderTabPreview?: (tab: Tab, size: PreviewSize) => React.ReactNode | null;
 };
 
 export function TabSwitcher(props: Props) {
     const {
         visible,
         tabs,
+        activeTabId,
         onClose,
         onSwitch,
         onCloseTab,
@@ -43,12 +48,14 @@ export function TabSwitcher(props: Props) {
     } = props;
     const insets = useSafeAreaInsets();
     const { width, height } = useWindowDimensions();
-    const bg = useThemeColor({ light: "#fff", dark: "#000" }, "background");
-    const cardBg = useThemeColor(
-        { light: "#f2f2f2", dark: "#111" },
-        "background"
-    );
-    const textColor = useThemeColor({ light: "#000", dark: "#fff" }, "text");
+    const colorScheme = useColorScheme() ?? "dark";
+    const isDark = colorScheme === "dark";
+    
+    const bg = isDark ? "#0A0A0F" : "#F8FAFC";
+    const cardBg = isDark ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.03)";
+    const cardBorder = isDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.08)";
+    const textColor = isDark ? "#FFFFFF" : "#0F172A";
+    const mutedColor = isDark ? "rgba(255,255,255,0.5)" : "rgba(15,23,42,0.5)";
 
     const normalTabs = useMemo(() => tabs.filter((t) => !t.incognito), [tabs]);
     const incogTabs = useMemo(() => tabs.filter((t) => t.incognito), [tabs]);
@@ -62,19 +69,35 @@ export function TabSwitcher(props: Props) {
 
     const handleMomentumEnd = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
         const ix = Math.round(e.nativeEvent.contentOffset.x / width);
+        if (ix !== pageIndex) {
+            haptics.selection();
+        }
         setPageIndex(ix);
     };
 
     function scrollToIndex(ix: number) {
+        haptics.light();
         setPageIndex(ix);
         scrollRef.current?.scrollTo({ x: ix * width, animated: true });
     }
 
     function handleAddPress() {
+        haptics.medium();
         if (pageIndex === 1) {
             if (props.onAddIncognitoTab) return props.onAddIncognitoTab();
         }
         onAddTab();
+    }
+
+    function handleTabPress(id: string) {
+        haptics.light();
+        onSwitch(id);
+        onClose();
+    }
+
+    function handleCloseTab(id: string) {
+        haptics.medium();
+        onCloseTab(id, { fromSwitcher: true });
     }
 
     // Overlay excludes bottom nav so it stays visible + clickable.
@@ -82,8 +105,9 @@ export function TabSwitcher(props: Props) {
     const overlayHeight = Math.max(0, height - bottomNavHeight);
 
     // Compute preview size
-    const GRID_PAD = 12;
-    const GRID_GAP = 10;
+    // Keep these in sync with `styles.grid` so we reliably fit 2 cards per row.
+    const GRID_PAD = 16;
+    const GRID_GAP = 12;
     const CARD_PAD = 8;
         const colWidth = Math.max(100, (width - GRID_PAD * 2 - GRID_GAP) / 2);
         const previewWidth = Math.max(80, colWidth - CARD_PAD * 2);
@@ -105,9 +129,25 @@ export function TabSwitcher(props: Props) {
         return `(() => {\n  try {\n    var head = document.head || document.getElementsByTagName('head')[0];\n    var meta = document.querySelector('meta[name=viewport]');\n    if (!meta) {\n      meta = document.createElement('meta');\n      meta.setAttribute('name', 'viewport');\n      head && head.appendChild(meta);\n    }\n    meta.setAttribute('content', 'width=${width}, initial-scale=${s}, maximum-scale=${s}, user-scalable=no');\n  } catch (e) {}\n})();\ntrue;`;
     }, [previewScale, width]);
 
+    const previewSize = useMemo(
+        () => ({ width: previewWidth, height: previewHeight }),
+        [previewHeight, previewWidth]
+    );
+
     const [mounted, setMounted] = useState(visible);
     const opacity = useRef(new Animated.Value(0)).current;
     const translateY = useRef(new Animated.Value(70)).current;
+
+    // When opened, default to the section matching the active tab type.
+    useEffect(() => {
+        if (!visible) return;
+        const active = tabs.find((t) => t.id === activeTabId);
+        const desiredIndex = active?.incognito ? 1 : 0;
+        setPageIndex(desiredIndex);
+        requestAnimationFrame(() => {
+            scrollRef.current?.scrollTo({ x: desiredIndex * width, animated: false });
+        });
+    }, [activeTabId, tabs, visible, width]);
 
     useEffect(() => {
         if (visible) {
@@ -174,57 +214,95 @@ export function TabSwitcher(props: Props) {
                     ]}
                     pointerEvents="auto"
                     onPress={() => {
-                        if (!isDraggingRef.current && !touchStartedOnControlRef.current) onClose();
+                        if (!isDraggingRef.current && !touchStartedOnControlRef.current) {
+                            haptics.light();
+                            onClose();
+                        }
                         touchStartedOnControlRef.current = false;
                     }}
                 >
-                    {/* Tabs area fills available height; no screen-wide blur overlay */}
+                    {/* Header with segment tabs */}
                     <View
-                        style={[styles.header, { paddingTop: 12 + Math.max(0, insets.top) }]}
+                        style={[styles.header, { paddingTop: 12 + Math.max(0, insets.top), borderBottomColor: cardBorder }]}
                         onLayout={(e) => setHeaderH(e.nativeEvent.layout.height)}
                     >
-                        <View style={styles.segmentWrapper}>
-                            <TouchableOpacity
+                        <View style={[styles.segmentWrapper, { backgroundColor: isDark ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.05)" }]}>
+                            <Pressable
                                 onPressIn={() => { touchStartedOnControlRef.current = true; }}
                                 onPress={() => scrollToIndex(0)}
-                                style={[
+                                style={({ pressed }) => [
                                     styles.segmentButton,
                                     pageIndex === 0 && styles.segmentActive,
+                                    { opacity: pressed ? 0.8 : 1 },
                                 ]}
                                 accessibilityLabel="Normal tabs"
+                                accessibilityRole="tab"
+                                accessibilityState={{ selected: pageIndex === 0 }}
                             >
-                                <Feather name="layout" size={16} color={textColor} />
-                                <Text style={[styles.segmentText, { color: textColor }]}>Tabs</Text>
-                                <View style={styles.countPill}>
-                                    <Text style={styles.countPillText}>{normalTabs.length}</Text>
+                                {pageIndex === 0 && (
+                                    <LinearGradient
+                                        colors={["#FF6B2C", "#FF8F5C"]}
+                                        style={StyleSheet.absoluteFill}
+                                        start={{ x: 0, y: 0 }}
+                                        end={{ x: 1, y: 0 }}
+                                    />
+                                )}
+                                <View style={styles.segmentContent}>
+                                    <Feather name="layout" size={16} color={pageIndex === 0 ? "#fff" : textColor} />
+                                    <Text style={[styles.segmentText, { color: pageIndex === 0 ? "#fff" : textColor }]}>Tabs</Text>
+                                    <View style={[styles.countPill, pageIndex === 0 && styles.countPillActive]}>
+                                        <Text style={[styles.countPillText, pageIndex === 0 && { color: "#FF6B2C" }]}>{normalTabs.length}</Text>
+                                    </View>
                                 </View>
-                            </TouchableOpacity>
-                            <TouchableOpacity
+                            </Pressable>
+                            <Pressable
                                 onPressIn={() => { touchStartedOnControlRef.current = true; }}
                                 onPress={() => scrollToIndex(1)}
-                                style={[
+                                style={({ pressed }) => [
                                     styles.segmentButton,
                                     pageIndex === 1 && styles.segmentActive,
+                                    { opacity: pressed ? 0.8 : 1 },
                                 ]}
                                 accessibilityLabel="Incognito tabs"
+                                accessibilityRole="tab"
+                                accessibilityState={{ selected: pageIndex === 1 }}
                             >
-                                <Feather name="eye-off" size={16} color={textColor} />
-                                <Text style={[styles.segmentText, { color: textColor }]}>Incognito</Text>
-                                {!!incogTabs.length && (
-                                    <View style={styles.countPill}>
-                                        <Text style={styles.countPillText}>{incogTabs.length}</Text>
-                                    </View>
+                                {pageIndex === 1 && (
+                                    <LinearGradient
+                                        colors={["#8B5CF6", "#A78BFA"]}
+                                        style={StyleSheet.absoluteFill}
+                                        start={{ x: 0, y: 0 }}
+                                        end={{ x: 1, y: 0 }}
+                                    />
                                 )}
-                            </TouchableOpacity>
+                                <View style={styles.segmentContent}>
+                                    <Feather name="eye-off" size={16} color={pageIndex === 1 ? "#fff" : textColor} />
+                                    <Text style={[styles.segmentText, { color: pageIndex === 1 ? "#fff" : textColor }]}>Incognito</Text>
+                                    {!!incogTabs.length && (
+                                        <View style={[styles.countPill, pageIndex === 1 && styles.countPillActive]}>
+                                            <Text style={[styles.countPillText, pageIndex === 1 && { color: "#8B5CF6" }]}>{incogTabs.length}</Text>
+                                        </View>
+                                    )}
+                                </View>
+                            </Pressable>
                         </View>
-                        <TouchableOpacity
+                        <Pressable
                             onPressIn={() => { touchStartedOnControlRef.current = true; }}
                             onPress={handleAddPress}
-                            style={styles.addButton}
+                            style={({ pressed }) => [
+                                styles.addButton,
+                                { transform: [{ scale: pressed ? 0.9 : 1 }] },
+                            ]}
                             accessibilityLabel="New tab"
-                        >   
-                            <Feather name="plus" size={20} color={textColor} />
-                        </TouchableOpacity>
+                            accessibilityRole="button"
+                        >
+                            <LinearGradient
+                                colors={pageIndex === 1 ? ["#8B5CF6", "#A78BFA"] : ["#FF6B2C", "#FF8F5C"]}
+                                style={styles.addButtonGradient}
+                            >
+                                <Feather name="plus" size={18} color="#fff" />
+                            </LinearGradient>
+                        </Pressable>
                     </View>
 
                     <ScrollView
@@ -255,40 +333,83 @@ export function TabSwitcher(props: Props) {
                                 }}
                                 keyboardShouldPersistTaps="handled"
                             >
-                                {normalTabs.map((t) => (
-                                    <View key={t.id} style={[styles.card, { backgroundColor: cardBg }]}> 
-                                        <TouchableOpacity
+                                {normalTabs.length === 0 && (
+                                    <View style={styles.emptyState}>
+                                        <View style={[styles.emptyIcon, { backgroundColor: "rgba(255,107,44,0.1)" }]}>
+                                            <Feather name="layout" size={32} color="#FF6B2C" />
+                                        </View>
+                                        <Text style={[styles.emptyTitle, { color: textColor }]}>No tabs open</Text>
+                                        <Text style={[styles.emptySubtitle, { color: mutedColor }]}>
+                                            Tap the + button to start browsing
+                                        </Text>
+                                    </View>
+                                )}
+                                {normalTabs.map((t) => {
+                                    const isActive = t.id === activeTabId;
+                                    return (
+                                        <Pressable 
+                                            key={t.id} 
                                             onPressIn={() => { touchStartedOnControlRef.current = true; }}
-                                            onPress={() => { onSwitch(t.id); onClose(); }}
-                                            style={styles.cardContent}
-                                            activeOpacity={0.9}
+                                            onPress={() => handleTabPress(t.id)}
+                                            style={({ pressed }) => [
+                                                styles.card, 
+                                                { 
+                                                    width: colWidth,
+                                                    backgroundColor: cardBg,
+                                                    borderColor: isActive ? "#FF6B2C" : cardBorder,
+                                                    borderWidth: isActive ? 2 : 1,
+                                                    transform: [{ scale: pressed ? 0.97 : 1 }],
+                                                }
+                                            ]}
                                         >
-                                            <View style={[styles.previewBox, { height: previewHeight, width: previewWidth }] }>
-                                                <WebView
-                                                    originWhitelist={["*"]}
-                                                    source={{ uri: t.url }}
-                                                    style={{ width: previewWidth, height: previewHeight, backgroundColor: "#fff" }}
-                                                    javaScriptEnabled
-                                                    domStorageEnabled
-                                                    injectedJavaScriptBeforeContentLoaded={injectedViewportJs}
-                                                    pointerEvents="none"
-                                                    scrollEnabled={false}
-                                                />
+                                            <View style={[styles.previewBox, { height: previewHeight, width: previewWidth }]}>
+                                                {(() => {
+                                                    const custom = props.renderTabPreview?.(t, previewSize);
+                                                    if (custom) return custom;
+                                                    return (
+                                                        <WebView
+                                                            originWhitelist={["*"]}
+                                                            source={{ uri: t.url }}
+                                                            style={{ width: previewWidth, height: previewHeight, backgroundColor: "#fff" }}
+                                                            javaScriptEnabled
+                                                            domStorageEnabled
+                                                            injectedJavaScriptBeforeContentLoaded={injectedViewportJs}
+                                                            pointerEvents="none"
+                                                            scrollEnabled={false}
+                                                        />
+                                                    );
+                                                })()}
                                             </View>
                                             <Text numberOfLines={2} style={[styles.cardTitle, { color: textColor }]}>
                                                 {t.title || t.url.replace(/^https?:\/\//, "")}
                                             </Text>
-                                            <Text numberOfLines={1} style={[styles.cardUrl, { color: textColor }]}>
+                                            <Text numberOfLines={1} style={[styles.cardUrl, { color: mutedColor }]}>
                                                 {t.url}
                                             </Text>
-                                        </TouchableOpacity>
-                                        <View style={styles.cardActions}>
-                                            <TouchableOpacity onPress={() => onCloseTab(t.id, { fromSwitcher: true })} style={styles.closeBtn} accessibilityLabel="Close tab">
-                                                <Feather name="x" size={18} color={textColor} />
-                                            </TouchableOpacity>
-                                        </View>
-                                    </View>
-                                ))}
+                                            <Pressable 
+                                                onPressIn={(e) => {
+                                                    touchStartedOnControlRef.current = true;
+                                                    // Prevent parent card onPress (switch/open)
+                                                    (e as any)?.stopPropagation?.();
+                                                }}
+                                                onPress={(e) => {
+                                                    (e as any)?.stopPropagation?.();
+                                                    handleCloseTab(t.id);
+                                                }}
+                                                style={({ pressed }) => [
+                                                    styles.closeBtn, 
+                                                    { transform: [{ scale: pressed ? 0.85 : 1 }] }
+                                                ]} 
+                                                accessibilityLabel="Close tab"
+                                                hitSlop={8}
+                                            >
+                                                <View style={[styles.closeBtnBg, { backgroundColor: isDark ? "rgba(0,0,0,0.6)" : "rgba(0,0,0,0.5)" }]}>
+                                                    <Feather name="x" size={14} color="#fff" />
+                                                </View>
+                                            </Pressable>
+                                        </Pressable>
+                                    );
+                                })}
                             </ScrollView>
                         </View>
 
@@ -310,47 +431,90 @@ export function TabSwitcher(props: Props) {
                                 }}
                                 keyboardShouldPersistTaps="handled"
                             >
-                                {incogTabs.map((t) => (
-                                    <View key={t.id} style={[styles.card, { backgroundColor: cardBg }]}> 
-                                        <TouchableOpacity
+                                {incogTabs.length === 0 && (
+                                    <View style={styles.emptyState}>
+                                        <View style={[styles.emptyIcon, { backgroundColor: "rgba(139,92,246,0.1)" }]}>
+                                            <Feather name="eye-off" size={32} color="#8B5CF6" />
+                                        </View>
+                                        <Text style={[styles.emptyTitle, { color: textColor }]}>No incognito tabs</Text>
+                                        <Text style={[styles.emptySubtitle, { color: mutedColor }]}>
+                                            Browse privately without saving history
+                                        </Text>
+                                    </View>
+                                )}
+                                {incogTabs.map((t) => {
+                                    const isActive = t.id === activeTabId;
+                                    return (
+                                        <Pressable 
+                                            key={t.id} 
                                             onPressIn={() => { touchStartedOnControlRef.current = true; }}
-                                            onPress={() => { onSwitch(t.id); onClose(); }}
-                                            style={styles.cardContent}
-                                            activeOpacity={0.9}
+                                            onPress={() => handleTabPress(t.id)}
+                                            style={({ pressed }) => [
+                                                styles.card, 
+                                                { 
+                                                    width: colWidth,
+                                                    backgroundColor: cardBg,
+                                                    borderColor: isActive ? "#8B5CF6" : cardBorder,
+                                                    borderWidth: isActive ? 2 : 1,
+                                                    transform: [{ scale: pressed ? 0.97 : 1 }],
+                                                }
+                                            ]}
                                         >
-                                            <View style={[styles.previewBox, { height: previewHeight, width: previewWidth }] }>
-                                                <WebView
-                                                    originWhitelist={["*"]}
-                                                    source={{ uri: t.url }}
-                                                    style={{ width: previewWidth, height: previewHeight, backgroundColor: "#fff" }}
-                                                    javaScriptEnabled
-                                                    domStorageEnabled
-                                                    injectedJavaScriptBeforeContentLoaded={injectedViewportJs}
-                                                    pointerEvents="none"
-                                                    scrollEnabled={false}
-                                                    incognito
-                                                    cacheEnabled={false}
-                                                    thirdPartyCookiesEnabled={false}
-                                                    sharedCookiesEnabled={false}
-                                                />
+                                            <View style={[styles.previewBox, { height: previewHeight, width: previewWidth }]}>
+                                                {(() => {
+                                                    const custom = props.renderTabPreview?.(t, previewSize);
+                                                    if (custom) return custom;
+                                                    return (
+                                                        <WebView
+                                                            originWhitelist={["*"]}
+                                                            source={{ uri: t.url }}
+                                                            style={{ width: previewWidth, height: previewHeight, backgroundColor: "#fff" }}
+                                                            javaScriptEnabled
+                                                            domStorageEnabled
+                                                            injectedJavaScriptBeforeContentLoaded={injectedViewportJs}
+                                                            pointerEvents="none"
+                                                            scrollEnabled={false}
+                                                            incognito
+                                                            cacheEnabled={false}
+                                                            thirdPartyCookiesEnabled={false}
+                                                            sharedCookiesEnabled={false}
+                                                        />
+                                                    );
+                                                })()}
                                                 <View style={styles.incogBadge}>
-                                                    <Feather name="eye-off" size={14} color="#fff" />
+                                                    <Feather name="eye-off" size={12} color="#fff" />
                                                 </View>
                                             </View>
                                             <Text numberOfLines={2} style={[styles.cardTitle, { color: textColor }]}>
                                                 {t.title || t.url.replace(/^https?:\/\//, "")}
                                             </Text>
-                                            <Text numberOfLines={1} style={[styles.cardUrl, { color: textColor }]}>
+                                            <Text numberOfLines={1} style={[styles.cardUrl, { color: mutedColor }]}>
                                                 {t.url}
                                             </Text>
-                                        </TouchableOpacity>
-                                        <View style={styles.cardActions}>
-                                            <TouchableOpacity onPress={() => onCloseTab(t.id, { fromSwitcher: true })} style={styles.closeBtn} accessibilityLabel="Close tab">
-                                                <Feather name="x" size={18} color={textColor} />
-                                            </TouchableOpacity>
-                                        </View>
-                                    </View>
-                                ))}
+                                            <Pressable 
+                                                onPressIn={(e) => {
+                                                    touchStartedOnControlRef.current = true;
+                                                    // Prevent parent card onPress (switch/open)
+                                                    (e as any)?.stopPropagation?.();
+                                                }}
+                                                onPress={(e) => {
+                                                    (e as any)?.stopPropagation?.();
+                                                    handleCloseTab(t.id);
+                                                }}
+                                                style={({ pressed }) => [
+                                                    styles.closeBtn, 
+                                                    { transform: [{ scale: pressed ? 0.85 : 1 }] }
+                                                ]} 
+                                                accessibilityLabel="Close tab"
+                                                hitSlop={8}
+                                            >
+                                                <View style={[styles.closeBtnBg, { backgroundColor: isDark ? "rgba(0,0,0,0.6)" : "rgba(0,0,0,0.5)" }]}>
+                                                    <Feather name="x" size={14} color="#fff" />
+                                                </View>
+                                            </Pressable>
+                                        </Pressable>
+                                    );
+                                })}
                             </ScrollView>
                         </View>
                     </ScrollView>
@@ -374,63 +538,137 @@ const styles = StyleSheet.create({
         flexDirection: "row",
         alignItems: "center",
         justifyContent: "space-between",
-        padding: 12,
-        borderBottomWidth: StyleSheet.hairlineWidth,
-        borderBottomColor: "#222",
+        paddingHorizontal: 16,
+        paddingVertical: 12,
+        borderBottomWidth: 1,
+        gap: 12,
     },
     headerText: { fontSize: 18, fontWeight: "700" },
-    addButton: { padding: 6 },
+    addButton: { 
+        borderRadius: 12,
+        overflow: "hidden",
+    },
+    addButtonGradient: {
+        width: 40,
+        height: 40,
+        borderRadius: 12,
+        alignItems: "center",
+        justifyContent: "center",
+    },
     segmentWrapper: {
         flex: 1,
         flexDirection: "row",
-        backgroundColor: "#222",
-        borderRadius: 20,
+        borderRadius: 14,
         overflow: "hidden",
+        padding: 3,
     },
     segmentButton: {
         flex: 1,
+        borderRadius: 11,
+        overflow: "hidden",
+        position: "relative",
+    },
+    segmentContent: {
         flexDirection: "row",
         alignItems: "center",
         justifyContent: "center",
         gap: 6,
-        paddingVertical: 6,
+        paddingVertical: 10,
+        paddingHorizontal: 12,
     },
-    segmentActive: { backgroundColor: "#333" },
-    segmentText: { fontWeight: "600" },
+    segmentActive: {},
+    segmentText: { fontWeight: "600", fontSize: 13 },
     countPill: {
-        marginLeft: 6,
-        backgroundColor: "#0a7ea4",
-        paddingHorizontal: 6,
+        marginLeft: 4,
+        backgroundColor: "rgba(255,255,255,0.15)",
+        paddingHorizontal: 7,
         paddingVertical: 2,
         borderRadius: 10,
     },
-    countPillText: { color: "#fff", fontSize: 12, fontWeight: "700" },
-    grid: { padding: 12, paddingBottom: 40, flexDirection: "row", flexWrap: "wrap", gap: 10 },
+    countPillActive: {
+        backgroundColor: "rgba(255,255,255,0.9)",
+    },
+    countPillText: { color: "#fff", fontSize: 11, fontWeight: "700" },
+    grid: { 
+        padding: 16, 
+        paddingBottom: 40, 
+        flexDirection: "row", 
+        flexWrap: "wrap", 
+        gap: 12,
+    },
     card: { 
-        width: "48%", 
-        borderRadius: 12, 
+        width: "47%", 
+        borderRadius: 16, 
         padding: 8, 
-        marginBottom: 12,
-        // subtle card shadow like Opera
+        position: "relative",
         shadowColor: '#000',
-        shadowOpacity: 0.18,
-        shadowRadius: 8,
-        shadowOffset: { width: 0, height: 3 },
-        elevation: 4,
+        shadowOpacity: 0.15,
+        shadowRadius: 12,
+        shadowOffset: { width: 0, height: 4 },
+        elevation: 5,
     },
     cardContent: { flex: 1 },
-    cardTitle: { fontSize: 14, fontWeight: "600", marginBottom: 6 },
-    cardUrl: { fontSize: 12, opacity: 0.8 },
+    cardTitle: { fontSize: 13, fontWeight: "600", marginBottom: 4, marginTop: 8 },
+    cardUrl: { fontSize: 11 },
     cardActions: { position: "absolute", top: 8, right: 8 },
-    closeBtn: { padding: 6 },
+    closeBtn: { 
+        position: "absolute",
+        top: 6,
+        right: 6,
+        zIndex: 10,
+    },
+    closeBtnBg: {
+        width: 26,
+        height: 26,
+        borderRadius: 13,
+        alignItems: "center",
+        justifyContent: "center",
+    },
     previewBox: {
         height: 120,
-        borderRadius: 16,
+        borderRadius: 12,
         overflow: "hidden",
-        marginBottom: 8,
         backgroundColor: "#fff",
+        position: "relative",
     },
-    
+    activeBadge: {
+        position: "absolute",
+        bottom: 6,
+        right: 6,
+        backgroundColor: "#FF6B2C",
+        paddingHorizontal: 8,
+        paddingVertical: 3,
+        borderRadius: 8,
+    },
+    activeBadgeText: {
+        color: "#fff",
+        fontSize: 10,
+        fontWeight: "700",
+    },
+    emptyState: {
+        flex: 1,
+        width: "100%",
+        alignItems: "center",
+        justifyContent: "center",
+        paddingVertical: 60,
+    },
+    emptyIcon: {
+        width: 80,
+        height: 80,
+        borderRadius: 24,
+        alignItems: "center",
+        justifyContent: "center",
+        marginBottom: 16,
+    },
+    emptyTitle: {
+        fontSize: 18,
+        fontWeight: "700",
+        marginBottom: 6,
+    },
+    emptySubtitle: {
+        fontSize: 14,
+        textAlign: "center",
+    },
     previewWeb: { flex: 1 },
     incogBadge: {
         position: "absolute",

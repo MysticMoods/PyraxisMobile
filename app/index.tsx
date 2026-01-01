@@ -1,5 +1,5 @@
-import BrowserScreen from './browser';
+import { Redirect } from "expo-router";
 
 export default function Index() {
-  return <BrowserScreen />;
+  return <Redirect href="/browser" />;
 }

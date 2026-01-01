@@ -1,6 +1,6 @@
 import { Feather } from "@expo/vector-icons";
 import { BlurView } from "expo-blur";
-import React, { useState } from "react";
+import React from "react";
 import {
     Modal, Platform, ScrollView,
     StyleSheet,
@@ -17,17 +17,17 @@ type Props = {
     visible: boolean;
     onClose: () => void;
     onAction: (action: string, payload?: any) => void;
+    adBlockEnabled: boolean;
+    desktopSite: boolean;
 };
 
-export function BottomSheetMenu({ visible, onClose, onAction }: Props) {
+export function BottomSheetMenu({ visible, onClose, onAction, adBlockEnabled, desktopSite }: Props) {
     const bg = useThemeColor({ light: "#fff", dark: "#000" }, "background");
     const rowBg = useThemeColor(
         { light: "#f8f8f8", dark: "#111" },
         "background"
     );
     const textColor = useThemeColor({ light: "#000", dark: "#fff" }, "text");
-
-    const [desktopSite, setDesktopSite] = useState(false);
 
     function handle(action: string, payload?: any) {
         onAction(action, payload);
@@ -97,12 +97,42 @@ export function BottomSheetMenu({ visible, onClose, onAction }: Props) {
                             ]}
                         >
                             <View style={styles.rowLeft}>
-                                <View
-                                    style={{
-                                        width: 20,
-                                        height: 20,
-                                        marginRight: 12,
-                                    }}
+                                <Feather
+                                    name="shield"
+                                    size={20}
+                                    color={adBlockEnabled ? "#ff8400ff" : textColor}
+                                    style={{ marginRight: 12 }}
+                                />
+                                <ThemedText
+                                    style={[
+                                        styles.rowText,
+                                        { color: textColor },
+                                    ]}
+                                >
+                                    Ad blocker
+                                </ThemedText>
+                            </View>
+                            <Switch
+                                value={adBlockEnabled}
+                                onValueChange={(v) => {
+                                    onAction("adblock", v);
+                                }}
+                                thumbColor={adBlockEnabled ? "#0a7ea4" : undefined}
+                            />
+                        </View>
+
+                        <View
+                            style={[
+                                styles.rowContainer,
+                                { backgroundColor: rowBg },
+                            ]}
+                        >
+                            <View style={styles.rowLeft}>
+                                <Feather
+                                    name="monitor"
+                                    size={20}
+                                    color={desktopSite ? "#ff8400ff" : textColor}
+                                    style={{ marginRight: 12 }}
                                 />
                                 <ThemedText
                                     style={[
@@ -116,7 +146,6 @@ export function BottomSheetMenu({ visible, onClose, onAction }: Props) {
                             <Switch
                                 value={desktopSite}
                                 onValueChange={(v) => {
-                                    setDesktopSite(v);
                                     onAction("desktop-site", v);
                                 }}
                                 thumbColor={desktopSite ? "#0a7ea4" : undefined}
